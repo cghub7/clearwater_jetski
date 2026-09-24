@@ -1,6 +1,6 @@
 # Clearwater Jetski
 
-A jetski simulator with real water physics, in a single HTML file. It uses WebGL2, with no libraries, no build step and no install. It's built on [Clearwater](https://github.com/Aureliengmz/clearwater), Aurélien's real-time photoreal water renderer.
+Clearwater Jetski is a jetski simulator with real water physics, in a single HTML file. It uses WebGL2, with no libraries, no build step and no install. It's built on [Clearwater](https://github.com/Aureliengmz/clearwater), Aurélien's real-time photoreal water renderer.
 
 ![Riding the surf in rough seas](media/jetski.jpg)
 
@@ -69,6 +69,6 @@ The seabed texture is base64 in `<script id="pebbles-texture">` at the end of ea
 
 ## Credits
 
-The water renderer is Clearwater, made by [Aurélien](https://x.com/Aurelien_Gz) at [Lumaris](https://lumaris.works). The jetski simulator is built on top of it.
+The water renderer is Clearwater, made by [Aurélien](https://x.com/Aurelien_Gz) at [Lumaris](https://lumaris.works). Clearwater Jetski is built on top of it.
 
 MIT License, see [LICENSE](LICENSE).
