@@ -44,13 +44,21 @@
   #msg.on { opacity:1; }
   #start { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; z-index:10; background:rgba(4,18,20,.28); cursor:pointer; }
   #start[hidden] { display:none; }
-  #card { max-width:440px; padding:26px 28px 22px; }
+  #card { max-width:440px; padding:26px 28px 22px; max-height:calc(100vh - 24px); overflow-y:auto; box-sizing:border-box; }
+  @media (max-height: 620px){ #card { padding:16px 20px 14px; } #card table { font-size:12px; } #card td { padding:1px 0; } #card h1 { font-size:22px; } }
   #card h1 { margin:0 0 4px; font:700 26px/1.1 -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; letter-spacing:-.01em; }
   #card p { margin:0 0 14px; opacity:.75; }
   #card table { border-collapse:collapse; width:100%; font-size:13px; }
   #card td { padding:3px 0; vertical-align:top; }
   #card td:first-child { opacity:.62; padding-right:14px; white-space:nowrap; }
   kbd { font:600 11px/1 ui-monospace, Menlo, monospace; padding:3px 6px; border-radius:6px; background:rgba(255,255,255,.14); }
+  #craft { display:flex; gap:10px; margin:0 0 16px; }
+  #craft button { flex:1; text-align:left; padding:11px 13px; border-radius:14px; border:1.5px solid rgba(255,255,255,.18); background:rgba(255,255,255,.06);
+    color:var(--ink); font:inherit; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+  #craft button b { display:block; font-size:14px; }
+  #craft button small { display:block; opacity:.65; margin-top:3px; font-size:11.5px; }
+  #craft button.on { border-color:#b8f25a; background:rgba(184,242,90,.14); }
+  #craft button:hover { background:rgba(255,255,255,.12); }
   #go { margin-top:16px; text-align:center; font-weight:600; padding:10px; border-radius:999px; background:rgba(255,255,255,.16); }
   #card .cr { margin-top:12px; font-size:11px; opacity:.55; text-align:center; }
   #card .cr a { color:inherit; }
@@ -85,12 +93,16 @@
 <div id="start">
   <div id="card" class="glass">
     <h1>Clearwater Jetski</h1>
-    <p>Ride a 160&nbsp;hp stand-up race jetski over real-time FFT waves.</p>
+    <p>Pick your jetski and ride it over real-time FFT waves.</p>
+    <div id="craft">
+      <button data-craft="stand"><b>Stand-up racer</b><small>160 hp race ski · ride standing, lean it hard</small></button>
+      <button data-craft="sit"><b>Sit-down cruiser</b><small>300 hp · seated, faster, more stable</small></button>
+    </div>
     <table>
       <tr><td><kbd>W</kbd> <kbd>S</kbd> / <kbd>↑</kbd> <kbd>↓</kbd></td><td>Throttle / brake &amp; reverse</td></tr>
       <tr><td><kbd>A</kbd> <kbd>D</kbd> / <kbd>←</kbd> <kbd>→</kbd></td><td>Steer (the jet only steers under throttle)</td></tr>
       <tr><td><kbd>Q</kbd> <kbd>E</kbd></td><td>Trim nose down / up; lean in the air</td></tr>
-      <tr><td><kbd>Shift</kbd></td><td>Attack stance: lean in hard for tighter turns</td></tr>
+      <tr><td><kbd>Shift</kbd></td><td>Lean in hard for tighter turns</td></tr>
       <tr><td><kbd>C</kbd></td><td>Camera: chase / first person</td></tr>
       <tr><td><kbd>G</kbd></td><td>Graphics: low / medium / high / ultra</td></tr>
       <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Sea state: glassy → surf (Sea button on mobile)</td></tr>
@@ -98,7 +110,7 @@
       <tr><td>Mouse drag / wheel</td><td>Look around / zoom</td></tr>
       <tr><td>Gamepad</td><td>Stick steer, RT gas, LT brake, Y camera, B reset</td></tr>
     </table>
-    <div id="go">Click or press any key to ride</div>
+    <div id="go">Click a jetski, or press any key to ride the highlighted one · <kbd>H</kbd> brings this back</div>
     <div class="cr"><span id="ver"></span> · Water renderer: <a href="https://github.com/Aureliengmz/clearwater" target="_blank" rel="noopener">Clearwater</a> by Aurélien · Lumaris</div>
   </div>
 </div>
@@ -400,8 +412,16 @@ function waterSurface(ocean, x, z, out, gHint){ // out: h, w, ux, uz, sx, sz, g
 // A stand-up race ski: 2.55 m long, 0.74 m wide, deep-V hull. The rider stands in a recessed tray at the back; the
 // engine sits under a raised hood up front, with the handle pole hinged near the bow. The tray is part of the
 // hull shape, so the physics knows water in the tray pushes down on it.
-const HULL_L = 2.55, TRAY_S = 0.47;   // tray aft of s = TRAY_S, hood forward of it
-function hullSection(s){ // s: 0 = transom, 1 = bow. Returns right-half profile, keel -> centreline top, [x,y]
+const TRAY_S = 0.47;   // stand-up: tray aft of s = TRAY_S, hood forward of it
+let HULL_L = 2.55;
+function sectionSit(s){ // sit-down cruiser: 3.3 m, seat and footwells over a closed deck
+  const yk = s < 0.55 ? 0 : 0.36*Math.pow((s-0.55)/0.45, 1.8);
+  let wc = s < 0.5 ? 0.50 + 0.08*Math.sin(Math.PI*s) : 0.58*Math.cos(Math.PI/2*Math.pow((s-0.5)/0.5, 1.3));
+  wc = Math.max(wc, 0.012);
+  const q = wc/0.58, yc = yk + (0.13 + 0.10*s)*q, wg = wc + 0.06*q + 0.008, yg = 0.52 + 0.13*s*s, yd = yg + 0.045;
+  return [[0,yk],[0.5*wc, yk+0.47*(yc-yk)],[wc,yc],[wc+0.03*q+0.004, yc+0.018],[wg-0.006,(yc+yg)*0.5],[wg,yg],[wg-0.02*q-0.003,yd],[0.55*wg,yd+0.012],[0,yd+0.015]];
+}
+function sectionStand(s){ // s: 0 = transom, 1 = bow. Returns right-half profile, keel -> centreline top, [x,y]
   const yk = s < 0.55 ? 0 : 0.30*Math.pow((s-0.55)/0.45, 1.8);
   let wc = s < 0.45 ? 0.33 + 0.04*Math.sin(Math.PI*s/0.9) : 0.37*Math.cos(Math.PI/2*Math.pow((s-0.45)/0.55, 1.25));
   wc = Math.max(wc, 0.01);
@@ -415,6 +435,7 @@ function hullSection(s){ // s: 0 = transom, 1 = bow. Returns right-half profile,
           [mix(wg-0.075*q, 0.72*wg, hood), mix(yFloor + 0.03, yHood - 0.05, hood)],
           [0, mix(yFloor, yHood, hood)]];
 }
+function hullSection(s){ return CRAFT.section(s); }
 function hullRing(s){ const h = hullSection(s), r = h.slice(); for (let j=h.length-2;j>=1;j--) r.push([-h[j][0], h[j][1]]); return r; } // 16 points
 const hullZ = s => HULL_L/2 - HULL_L*s;
 // Closed hull surface with outward winding. The section is not convex (the tray), so winding comes from a consistent
@@ -440,22 +461,37 @@ function buildHull(NS){
 }
 
 /* ---------------- Jetski rigid-body physics ---------------- */
+// Two craft share the hydrodynamics; each brings its hull, mass properties, pump and the rider's handling gains.
+const CRAFTS = {
+  stand: {
+    id:'stand', name:'Stand-up racer', blurb:'160 hp stand-up race ski', L:2.55, section: s => sectionStand(s), revFactor: 2,
+    ski: { mass:330, inertia:[210,220,70], com:[0,0.44,0.15], thrustMax:5000, vJet:35, rpmIdle:1600, rpmMax:7800, rpmLimit:8200,
+      nozzle:[0,0.16,1.25], intake:[0,0.02,0.45], steerMax:0.40,
+      fins:[ [0,-0.01,0.95, 0.016, 2.5], [0.36,0.08,0.90, 0.009, 2.5], [-0.36,0.08,0.90, 0.009, 2.5], [0,0.0,-0.25, 0.022, 2.0] ],
+      extraContacts:[[0,0.68,-0.9],[0,1.2,-0.07],[0,1.85,0.45]],          // pole pivot, handlebar, rider's head
+      h:{ bank0:0.12, bankSpd:0.52, bankStand:0.14, rollKp:7000, rollKd:900, airRoll:60, airRollD:30, pitchAir:200, pitchWater:130, standPitch:90,
+          riderPitchDamp:400, yawDamp:100, want0:1.7, wantSpd:0.8, wantStand:0.3, carveK0:330, carveK1:1100, lim0:330, lim1:900, limStand:420, push:3000 } },
+  },
+  sit: {
+    id:'sit', name:'Sit-down cruiser', blurb:'300 hp sit-down jetski', L:3.3, section: s => sectionSit(s), revFactor: 1.5,
+    ski: { mass:430, inertia:[440,470,125], com:[0,0.50,0.18], thrustMax:7000, vJet:41, rpmIdle:1800, rpmMax:8000, rpmLimit:8500,
+      nozzle:[0,0.20,1.60], intake:[0,0.02,0.75], steerMax:0.36,
+      fins:[ [0,-0.01,1.25, 0.02, 2.5], [0.56,0.10,1.15, 0.012, 2.5], [-0.56,0.10,1.15, 0.012, 2.5], [0,0.0,-0.3, 0.03, 2.0] ],
+      extraContacts:[[0,0.95,-0.4],[0,0.93,0.6],[0,1.75,0.1]],            // console, seat, rider's head
+      h:{ bank0:0.10, bankSpd:0.42, bankStand:0.12, rollKp:14000, rollKd:1900, airRoll:120, airRollD:60, pitchAir:420, pitchWater:260, standPitch:180,
+          riderPitchDamp:0, yawDamp:210, want0:1.5, wantSpd:0.75, wantStand:0.25, carveK0:700, carveK1:2300, lim0:700, lim1:1900, limStand:900, push:3600 } },
+  },
+};
 const SKI = {
-  mass: 330,                      // 250 kg stand-up race ski + fuel, 80 kg rider
-  inertia: [210, 220, 70],        // body axes: x = pitch, y = yaw, z = roll
-  com: [0, 0.44, 0.15],           // in hull coordinates (keel at transom = origin, -z forward); the standing rider raises it
   CP: 1.5,                        // pressure coefficient, face moving into water (low-aspect planing plate ~ 1.5·sinτ)
   CS: 0.12,                       // suction coefficient, face moving away (flow separates / ventilates)
   CF: 0.006,                      // skin friction
   KLIN: 650,                      // linear pressure damping (Pa per m/s), radiation-ish damping at low speed
-  thrustMax: 5000, vJet: 35,      // jet pump (160 hp class): static thrust (N), jet exit speed at full rpm (m/s)
-  rpmIdle: 1600, rpmMax: 7800, rpmLimit: 8200,
-  nozzle: [0, 0.16, 1.25], intake: [0, 0.02, 0.45],
-  steerMax: 0.40, trimMin: -0.10, trimMax: 0.16,
-  riderPitchDamp: 400,            // N·m·s: the rider's knees against pitching
-  // lateral foils: pump housing/keel strip and the sponsons give the stern its grip (x,y,z, area m², lift slope)
-  fins: [ [0,-0.01,0.95, 0.016, 2.5], [0.36,0.08,0.90, 0.009, 2.5], [-0.36,0.08,0.90, 0.009, 2.5], [0,0.0,-0.25, 0.022, 2.0] ],
+  trimMin: -0.10, trimMax: 0.16,
 };
+let CRAFT = null;
+function setCraft(id){ CRAFT = CRAFTS[id] || CRAFTS.stand; HULL_L = CRAFT.L; Object.assign(SKI, CRAFT.ski); }
+setCraft('stand');
 function makeSki(){
   const hull = buildHull(14);
   const c0 = SKI.com, P = [];
@@ -474,7 +510,7 @@ function makeSki(){
   const contacts = [];
   for (let i=0;i<=6;i++){ const s = i/6, h = hullSection(s), z = hullZ(s);
     contacts.push([0,h[0][1],z],[h[2][0],h[2][1],z],[-h[2][0],h[2][1],z]); if (i%2===0) contacts.push([h[5][0],h[5][1],z],[-h[5][0],h[5][1],z]); }
-  contacts.push([0,0.68,-0.9],[0,1.2,-0.07],[0,1.85,0.45]); // pole pivot, handlebar, rider's head
+  contacts.push(...SKI.extraContacts);
   const ct = contacts.map(p=>[p[0]-c0[0],p[1]-c0[1],p[2]-c0[2]]);
   const S = {
     NP, pc, pn, pa, po, ct,
@@ -595,22 +631,22 @@ function skiStep(S, ocean, dt, tOff){
   const roll = Math.atan2(R[3], R[4]), rollRate = w[0]*R[2] + w[1]*R[5] + w[2]*R[8];
   const onBoard = Math.abs(roll) < 1.2 && R[4] > 0.25;   // past ~70 degrees of heel the rider is in the water
   S.capsized = !onBoard;
-  const bankT = -S.steer*(0.12 + (0.52 + 0.14*S.stand)*spdF);
+  const hd = SKI.h, bankT = -S.steer*(hd.bank0 + (hd.bankSpd + hd.bankStand*S.stand)*spdF);
   S.bankT = bankT;
-  const rollT = !onBoard ? 0 : air ? -S.steer*60 - 30*rollRate : (7000*(bankT - roll) - 900*rollRate);
-  const pitchT = !onBoard ? 0 : S.pitchIn*(air? 200 : 130) - (air? 0 : S.stand*90*spdF);
+  const rollT = !onBoard ? 0 : air ? -S.steer*hd.airRoll - hd.airRollD*rollRate : (hd.rollKp*(bankT - roll) - hd.rollKd*rollRate);
+  const pitchT = !onBoard ? 0 : S.pitchIn*(air? hd.pitchAir : hd.pitchWater) - (air? 0 : S.stand*hd.standPitch*spdF);
   // a standing rider soaks up pitching with knees and weight (damps porpoising); nothing to push against in the air
   const pitchRate = w[0]*R[0] + w[1]*R[3] + w[2]*R[6];
-  const pitchDamp = (onBoard && !air) ? -SKI.riderPitchDamp*pitchRate : 0;
+  const pitchDamp = (onBoard && !air) ? -hd.riderPitchDamp*pitchRate : 0;
   const RT = bx(pitchT + pitchDamp, 0, rollT); Tx += RT[0]; Ty += RT[1]; Tz += RT[2];
   // carving: the banked V-bottom and the rider's weight on the inside chine bite into the water (yaw torque),
   // scaled by how much hull is actually in the water
   if (!air){ const bite = clamp(wetA/0.35, 0, 1), yawRate = w[0]*R[1] + w[1]*R[4] + w[2]*R[7];
     // lateral resistance of the whole hull against spinning (grows with the square of the yaw rate)
-    const yd = bx(0, -100*bite*yawRate*Math.abs(yawRate), 0); Tx += yd[0]; Ty += yd[1]; Tz += yd[2];
+    const yd = bx(0, -hd.yawDamp*bite*yawRate*Math.abs(yawRate), 0); Tx += yd[0]; Ty += yd[1]; Tz += yd[2];
     if (onBoard){
-    const want = -S.steer*(1.7 - 0.8*spdF + 0.3*S.stand)*clamp(S.fwdSpeed/3, 0, 1);   // rad/s the rider asks for
-    const k = 330 + 1100*Math.abs(S.steer), lim = 330 + 900*Math.abs(S.steer) + 420*S.stand;
+    const want = -S.steer*(hd.want0 - hd.wantSpd*spdF + hd.wantStand*S.stand)*clamp(S.fwdSpeed/3, 0, 1);   // rad/s the rider asks for
+    const k = hd.carveK0 + hd.carveK1*Math.abs(S.steer), lim = hd.lim0 + hd.lim1*Math.abs(S.steer) + hd.limStand*S.stand;
     const yt = bx(0, bite*clamp((want - yawRate)*k, -lim, lim)*clamp(S.fwdSpeed/6, 0, 1), 0);
     Tx += yt[0]; Ty += yt[1]; Tz += yt[2]; } }
   // ---- terrain contacts (beaching, rocks) ----
@@ -632,7 +668,7 @@ function skiStep(S, ocean, dt, tOff){
   // beached: the rider walks the ski (push forward with throttle, back into the water with brake)
   if (S.grounded > 0 && S.wet < 0.4 && vv < 2.0 && onBoard){
     const pushDir = S.thr - S.brake, uphill = gC > 1.4 && pushDir > 0;
-    const push = uphill ? 0 : pushDir*3000, fl = Math.hypot(fwd[0], fwd[2]) || 1;
+    const push = uphill ? 0 : pushDir*SKI.h.push, fl = Math.hypot(fwd[0], fwd[2]) || 1;
     Fx += fwd[0]/fl*push; Fz += fwd[2]/fl*push;
     const yawT = bx(0, -S.steer*220*Math.min(1, Math.abs(S.thr - S.brake) + 0.3), 0); Tx += yawT[0]; Ty += yawT[1]; Tz += yawT[2];
   }
@@ -1671,7 +1707,7 @@ function hullStripColor(k, s){
   if (k === 6) return hood ? ((s > 0.55 && s < 0.92) ? COL.green : COL.black) : COL.trayWall;
   return hood ? COL.black : COL.mat;
 }
-function buildSkiMesh(){
+function buildSkiMeshStand(){
   const m = MeshB();
   const breaks = [0.08, 0.36, 0.55, 0.58, 0.82, 0.92, TRAY_S + 0.005];
   const st = [...new Set([...Array.from({length:49}, (_, i) => i/48), ...breaks].map(x => +x.toFixed(5)))].sort((a,b) => a-b);
@@ -1768,7 +1804,7 @@ function mbHelmet(m, X){
 // Hinged handle pole + a standing rider in race gear, in hull coordinates.
 // pose: steer (-1..1), lean (rad, + = right, relative to the ski), attack (0..1, Shift), crouch (0..1, landings)
 const POLE_PIVOT = (() => { const s = 0.84, h = hullSection(s); return [0, h[8][1] + 0.03, hullZ(s)]; })();
-function buildRider(pose, hideHead){
+function buildRiderStand(pose, hideHead){
   const m = MeshB();
   const add = (a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], sc = (a,k)=>a.map(x=>x*k), sub = (a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
   const nrm = v => { const l = Math.hypot(...v)||1; return v.map(x=>x/l); }, crs = (a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
@@ -1826,6 +1862,127 @@ function buildRider(pose, hideHead){
   }
   return { geo: mbFinish(m), head, chest, un: up };
 }
+// ---- the original sit-down cruiser and its seated rider ----
+const COL_SIT = {
+  hull: lin(0.93,0.93,0.92,0.75), transom: lin(0.82,0.83,0.83,0.6), deck: lin(0.33,0.34,0.35,0.12), mat: lin(0.24,0.25,0.26,0.1), rub: lin(0.07,0.07,0.08,0.4), accent: lin(0.98,0.80,0.10,0.9),
+  hood: lin(0.98,0.80,0.10,0.92), seat: lin(0.08,0.08,0.09,0.35), dark: lin(0.12,0.12,0.13,0.5), metal: lin(0.55,0.56,0.58,0.8),
+  skin: lin(0.78,0.58,0.45,0.25), vest: lin(0.85,0.22,0.08,0.3), vest2: lin(0.12,0.12,0.14,0.3), shorts: lin(0.10,0.18,0.35,0.2), hair: lin(0.12,0.08,0.05,0.3), shades: lin(0.02,0.02,0.02,0.95),
+};
+function buildSkiMeshSit(){
+  const m = MeshB();
+  // hull: shared shape with the physics (finer)
+  // one strip per panel of the cross-section: chines, rub rail and deck edge stay crisp, colours don't bleed
+  const NS = 44, rings = [];
+  for (let i=0;i<=NS;i++){ const s = i/NS; rings.push(hullRing(s).map(([x,y]) => [x, y, hullZ(s)])); }
+  const R = rings[0].length;
+  const stripCol = j => { const k = j <= 7 ? j : 15 - j; return k <= 3 ? COL_SIT.hull : k === 4 ? COL_SIT.accent : k === 5 ? COL_SIT.rub : COL_SIT.deck; };
+  const axis = cen => { const s = clamp((HULL_L/2-cen[2])/HULL_L,0,1), h = hullSection(s); return [0, (h[0][1]+h[8][1])/2, cen[2]]; };
+  for (let j=0;j<R;j++){
+    const st = m.i.length, base = m.p.length/3;
+    for (let i=0;i<=NS;i++){ mbVert(m, rings[i][j], stripCol(j)); mbVert(m, rings[i][(j+1)%R], stripCol(j)); }
+    for (let i=0;i<NS;i++){ const a = base+i*2; m.i.push(a, a+2, a+1, a+1, a+2, a+3); }
+    orient(m, st, axis);
+  }
+  for (const [ri, dz] of [[0, -1], [NS, 1]]){           // transom and bow caps, flat
+    const st = m.i.length, ring = rings[ri], cy = ring.reduce((a,p)=>a+p[1], 0)/R;
+    const ci = mbVert(m, [0, cy, ring[0][2]], COL_SIT.transom), vs = ring.map(p => mbVert(m, p, COL_SIT.transom));
+    for (let j=0;j<R;j++) m.i.push(ci, vs[j], vs[(j+1)%R]);
+    orient(m, st, cen => [cen[0], cen[1], cen[2] + dz]);
+  }
+  // swim platform over the transom
+  mbBox(m, [0, 0.565, 1.53], [0.50, 0.028, 0.25], COL_SIT.mat);
+  // hood / front cowl over the bow
+  const hood = [];
+  for (let k=0;k<=18;k++){
+    const u = k/18, z = -0.22 - 1.30*u, s = (HULL_L/2 - z)/HULL_L, h = hullSection(s);
+    const yd = h[8][1] + 0.004, b = h[6][0]*0.98, yt = yd + (1.02 - yd)*(1 - Math.pow(u, 1.7)) * (u < 0.04 ? 0.94 + 1.5*u : 1);
+    const ring = [];
+    for (let q=0;q<=14;q++){ const ph = Math.PI*q/14, c = Math.cos(ph), sn = Math.sin(ph);
+      ring.push([b*Math.sign(c)*Math.pow(Math.abs(c), 0.7), yd + (yt-yd)*Math.pow(sn, 0.55), z]); }
+    hood.push(ring);
+  }
+  let st = m.i.length;
+  mbLoft(m, hood, (i,j) => j<0 ? COL_SIT.dark : ((j===0||j===14) ? COL_SIT.rub : COL_SIT.hood), false, true, false);
+  orient(m, st, cen => [0, 0.45, cen[2] + (cen[2] > -0.24 ? 0.5 : 0)]);
+  // seat
+  const seat = [];
+  for (let k=0;k<=16;k++){
+    const u = k/16, z = -0.26 + 1.32*u, s = (HULL_L/2 - z)/HULL_L, h = hullSection(s);
+    const end = Math.pow(1 - Math.pow(Math.abs(2*u-1), 6), 0.35);
+    const w = Math.max(0.215*end, 0.02), yb = h[8][1] - 0.01, yt = yb + Math.max((0.94 - 0.04*u - yb)*Math.pow(end,0.5), 0.01);
+    const ring = [];
+    for (let q=0;q<20;q++){ const th = 2*Math.PI*q/20, c = Math.cos(th), sn = Math.sin(th);
+      ring.push([w*Math.sign(c)*Math.pow(Math.abs(c), 0.35), (yt+yb)/2 + (yt-yb)/2*Math.sign(sn)*Math.pow(Math.abs(sn), 0.35), z]); }
+    seat.push(ring);
+  }
+  st = m.i.length;
+  mbLoft(m, seat, (i,j,p) => (p[1] < 0.66 ? COL_SIT.dark : COL_SIT.seat), true, true, true);
+  orient(m, st, cen => [0, 0.76, clamp(cen[2], -0.2, 1.0)]);
+  // jet nozzle, reboarding step, sponsons
+  mbCapsule(m, [0,0.20,1.50], [0,0.20,1.80], 0.085, 0.075, COL_SIT.dark);
+  mbCapsule(m, [-0.22,0.47,1.72], [0.22,0.47,1.72], 0.025, 0.025, COL_SIT.metal, 8, 2);
+  for (const sx of [-1,1]) mbCapsule(m, [0.57*sx,0.16,0.7], [0.56*sx,0.13,1.45], 0.035, 0.03, COL_SIT.rub, 8, 2);
+  // console + mirrors
+  mbCapsule(m, [0,0.95,-0.30], [0,1.03,-0.46], 0.07, 0.06, COL_SIT.dark);
+  for (const sx of [-1,1]) mbCapsule(m, [0.30*sx,1.03,-0.62], [0.36*sx,1.10,-0.60], 0.035, 0.05, COL_SIT.dark, 8, 2);
+  return mbFinish(m);
+}
+
+function buildRiderSit(pose, hideHead){
+  const m = MeshB();
+  const add = (a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], sc = (a,k)=>a.map(x=>x*k);
+  // handlebar rotates about the tilted steering column
+  const piv = [0, 1.00, -0.42], ang = -pose.steer*0.42, ca = Math.cos(ang), sa = Math.sin(ang);
+  const rotY = p => { const q = [p[0]-piv[0], p[1]-piv[1], p[2]-piv[2]]; return [piv[0] + q[0]*ca + q[2]*sa, p[1], piv[2] - q[0]*sa + q[2]*ca]; };
+  const gL = rotY([-0.36, 1.07, -0.38]), gR = rotY([0.36, 1.07, -0.38]);
+  mbCapsule(m, rotY([-0.28,1.07,-0.40]), rotY([0.28,1.07,-0.40]), 0.017, 0.017, COL_SIT.metal, 8, 2);
+  mbCapsule(m, rotY([-0.40,1.07,-0.38]), rotY([-0.28,1.07,-0.40]), 0.024, 0.024, COL_SIT.seat, 8, 2);
+  mbCapsule(m, rotY([0.28,1.07,-0.40]), rotY([0.40,1.07,-0.38]), 0.024, 0.024, COL_SIT.seat, 8, 2);
+  mbCapsule(m, [0,0.98,-0.44], rotY([0,1.07,-0.42]), 0.03, 0.03, COL_SIT.dark, 8, 2);
+  // body
+  const st = pose.stand, cr = pose.crouch, lean = pose.lean;
+  const cl = Math.cos(lean), sl = Math.sin(lean);
+  const rollAbout = (p, o) => { const q = [p[0]-o[0], p[1]-o[1]]; return [o[0] + q[0]*cl + q[1]*sl, o[1] - q[0]*sl + q[1]*cl, p[2]]; };
+  const hip = [0, 1.03 + 0.30*st - 0.05*cr, 0.30 - 0.12*st];
+  const seatPt = [0, 0.93, hip[2]];
+  let chest = add(hip, [0, 0.44 - 0.10*cr - 0.04*pose.fwd, -0.15 - 0.10*pose.fwd - 0.08*st - 0.05*cr]);
+  chest = rollAbout(chest, seatPt);
+  const hipR = rollAbout(hip, seatPt);
+  const up = [chest[0]-hipR[0], chest[1]-hipR[1], chest[2]-hipR[2]]; const ul = Math.hypot(...up); const un = sc(up, 1/ul);
+  const side = [cl, -sl, 0];
+  const head = add(chest, add(sc(un, 0.25), [0,0.02,-0.03]));
+  const shL = add(chest, add(sc(side,-0.19), sc(un,-0.03))), shR = add(chest, add(sc(side,0.19), sc(un,-0.03)));
+  // legs
+  for (const sx of [-1,1]){
+    const hp = add(hipR, sc(side, 0.10*sx));
+    const foot = [0.31*sx, 0.63, 0.12 - 0.05*st];
+    const knee = ik2(hp, foot, 0.44, 0.45, [0.25*sx, 0.5, -0.9]);
+    mbCapsule(m, hp, knee, 0.085, 0.065, COL_SIT.shorts, 10, 3);
+    mbCapsule(m, knee, foot, 0.058, 0.045, COL_SIT.skin, 10, 3);
+    mbCapsule(m, add(foot,[0,-0.03,0.04]), add(foot,[0.01*sx,-0.04,-0.18]), 0.045, 0.04, COL_SIT.dark, 8, 2);
+  }
+  // torso + vest
+  mbCapsule(m, hipR, add(chest, sc(un,-0.02)), 0.15, 0.17, COL_SIT.vest, 14, 4);
+  mbCapsule(m, add(hipR, sc(un, 0.12)), add(hipR, sc(un, 0.16)), 0.158, 0.158, COL_SIT.vest2, 14, 2);
+  mbCapsule(m, add(shL, sc(side,0.04)), add(shR, sc(side,-0.04)), 0.08, 0.08, COL_SIT.vest, 10, 3);
+  // arms
+  for (const [sh, g, sx] of [[shL, gL, -1], [shR, gR, 1]]){
+    const elbow = ik2(sh, g, 0.30, 0.31, [0.9*sx, -0.6, 0.6]);
+    mbCapsule(m, sh, elbow, 0.066, 0.054, COL_SIT.skin, 10, 3);
+    mbCapsule(m, elbow, g, 0.052, 0.042, COL_SIT.skin, 10, 3);
+    mbCapsule(m, g, add(g, [0.02*sx, 0.0, -0.03]), 0.045, 0.045, COL_SIT.skin, 8, 2);
+  }
+  if (!hideHead){
+    mbCapsule(m, add(chest, sc(un, 0.09)), add(chest, sc(un, 0.17)), 0.055, 0.05, COL_SIT.skin, 10, 2);
+    mbCapsule(m, add(head,[0,-0.02,0.01]), add(head,[0,0.03,-0.01]), 0.105, 0.1, COL_SIT.skin, 14, 5);
+    mbCapsule(m, add(head,[0,0.05,0.03]), add(head,[0,0.07,-0.01]), 0.1, 0.092, COL_SIT.hair, 14, 4);
+    mbCapsule(m, add(head,[-0.07,0.015,-0.085]), add(head,[0.07,0.015,-0.085]), 0.026, 0.026, COL_SIT.shades, 10, 2);
+  }
+  return { geo: mbFinish(m), head, chest, un };
+}
+// ---- the chosen craft ----
+function buildSkiMesh(){ return CRAFT.id === 'sit' ? buildSkiMeshSit() : buildSkiMeshStand(); }
+function buildRider(pose, hideHead){ return CRAFT.id === 'sit' ? buildRiderSit(pose, hideHead) : buildRiderStand(pose, hideHead); }
 function makeGeoBuffer(dynamic){
   const vao = gl.createVertexArray(), vb = gl.createBuffer(), ib = gl.createBuffer();
   gl.bindVertexArray(vao); gl.bindBuffer(gl.ARRAY_BUFFER, vb); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
@@ -2177,7 +2334,7 @@ function post(t){
 
 
 /* ---------------- Game state ---------------- */
-const VERSION = '1.6.0';
+const VERSION = '1.7.0';
 document.getElementById('ver').textContent = 'v' + VERSION;
 const SUN_EL = 31*Math.PI/180, SUN_AZ = 6*Math.PI/180;
 const SUNV = [Math.sin(SUN_AZ)*Math.cos(SUN_EL), Math.sin(SUN_EL), -Math.cos(SUN_AZ)*Math.cos(SUN_EL)];
@@ -2189,8 +2346,22 @@ const pSurfDbg = prog(VS, HEAD + TERRAIN_GLSL + SURF_GLSL + `uniform vec2 uC; vo
 const surfTex = tex(SURF.N, 1, gl.RGBA32F, { filter:gl.NEAREST });
 gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, SURF.N, 1, gl.RGBA, gl.FLOAT, SURF.table);
 ocean.update(0, 0);
-const ski = makeSki();
+// craft: ?craft=sit|stand, else the last one ridden
+{ let c = Q.get('craft'); if (!c){ try { c = localStorage.getItem('cwj.craft'); } catch(e){} } setCraft(CRAFTS[c] ? c : 'stand'); }
+skiBuf.set(buildSkiMesh());
+let ski = makeSki();
 ski.reset(SPAWN[0], SPAWN[1], +(Q.get('syaw')||0), ocean);
+function selectCraft(id){
+  if (!CRAFTS[id]) return;
+  try { localStorage.setItem('cwj.craft', id); } catch(e){}
+  document.querySelectorAll('#craft button').forEach(b => b.classList.toggle('on', b.dataset.craft === id));
+  if (CRAFT.id === id) return;
+  const p = ski.p.slice(), f = [-ski.R[2], -ski.R[8]], yaw = Math.atan2(-f[0], -f[1]);
+  setCraft(id); skiBuf.set(buildSkiMesh());
+  ski = makeSki();
+  let x = p[0], z = p[2]; if (groundH(x, z) > -1.2){ x = SPAWN[0]; z = SPAWN[1]; }
+  ski.reset(x, z, yaw, ocean); cam.init = false;
+}
 let tSim = 0, started = false, camMode = Q.has('fp') ? 1 : 0, muted = false;
 const AUTO = Q.has('auto');
 // test hooks: ?pre=6 simulates 6 s of full-throttle riding before the first frame, ?dt=0.033 fixes the frame step
@@ -2207,8 +2378,12 @@ const keys = new Set();
 const $start = document.getElementById('start'), $msg = document.getElementById('msg'), $air = document.getElementById('air');
 let msgT = 0;
 function flash(text, secs=2.2){ $msg.textContent = text; $msg.classList.add('on'); msgT = secs; }
-function start(){ if (started) return; started = true; $start.hidden = true; initAudio(); if (!Q.has('quiet')) flash('Surf is breaking on the beach behind you: turn around to jump the sets', 4.5); }
+function start(){ if (started){ $start.hidden = true; return; } started = true; $start.hidden = true; initAudio(); if (!Q.has('quiet')) flash('Surf is breaking on the beach behind you: turn around to jump the sets', 4.5); }
 $start.addEventListener('click', start);
+document.querySelectorAll('#craft button').forEach(b => {
+  b.classList.toggle('on', b.dataset.craft === CRAFT.id);
+  b.addEventListener('click', () => selectCraft(b.dataset.craft));      // then the click reaches #start and starts
+});
 addEventListener('keydown', e => {
   if (e.repeat) { keys.add(e.code); return; }
   keys.add(e.code);
@@ -2331,7 +2506,7 @@ function initAudio(){
 }
 function updateAudio(){
   const a = audio; if (!a.ctx) return;
-  const t = a.ctx.currentTime, rpm = ski.rpm, f0 = rpm/60*2;   // 4-cylinder four-stroke
+  const t = a.ctx.currentTime, rpm = ski.rpm, f0 = rpm/60*CRAFT.revFactor;   // firing frequency: 4-cyl (stand-up) / 3-cyl (cruiser) four-stroke
   const s = (p, v, tc=0.04) => p.setTargetAtTime(v, t, tc);
   s(a.o1.frequency, f0); s(a.o2.frequency, f0*2.003); s(a.o3.frequency, f0*0.5);
   const load = Math.max(ski.thr, ski.brake);
@@ -2485,7 +2660,7 @@ function updateHUD(dt){
   $sub.textContent = `${(kmh/1.609).toFixed(0)} mph · ${(kmh/1.852).toFixed(0)} kn${ski.brake > ski.thr && ski.brake > 0.1 ? ' · REVERSE' : ''}`;
   $rpm.style.width = `${clamp(ski.rpm/SKI.rpmLimit, 0, 1)*100}%`; $rpmv.textContent = Math.round(ski.rpm/10)*10;
   $trim.style.left = `${(ski.trim - SKI.trimMin)/(SKI.trimMax - SKI.trimMin)*100}%`;
-  $mode.innerHTML = `<b>${camMode ? 'First person' : 'Chase'}</b> · ${SEAS[ocean.sea].name} · <kbd>H</kbd> help`;
+  $mode.innerHTML = `<b>${CRAFT.name}</b> · ${camMode ? 'First person' : 'Chase'} · ${SEAS[ocean.sea].name} · <kbd>H</kbd> help`;
 }
 
 /* ---------------- ?bench: time each GPU stage in isolation (gl.finish around N repeats) ---------------- */
@@ -2580,7 +2755,9 @@ function frame(now){
   // rider
   const spdF = clamp(ski.fwdSpeed/14, 0, 1);
   // the rider throws their body into the turn (on top of the ski's own bank), crouches into landings and when attacking
-  const pose = { steer: ski.steer, lean: ski.capsized ? 0 : ski.steer*(0.14 + 0.36*spdF)*(1 + 0.35*ski.stand), attack: ski.stand, crouch: Math.min(1, crouch) };
+  const pose = CRAFT.id === 'sit'
+    ? { steer: ski.steer, lean: ski.steer*(0.12 + 0.28*spdF) + ski.stand*0.1*ski.steer, stand: ski.stand, crouch: Math.min(1, crouch), fwd: clamp(ski.thr*spdF, 0, 1)*0.7 }
+    : { steer: ski.steer, lean: ski.capsized ? 0 : ski.steer*(0.14 + 0.36*spdF)*(1 + 0.35*ski.stand), attack: ski.stand, crouch: Math.min(1, crouch) };
   const rider = buildRider(pose, camMode === 1);
   riderBuf.set(rider.geo);
   const tc3 = performance.now();
@@ -2613,7 +2790,8 @@ function frame(now){
   gl.uniform1f(u.uRipSize, RSIZE); gl.uniform2fv(u.uRipCenter, ripCenter); gl.uniform2fv(u.uCausShift, causShift);
   gl.uniform1f(u.uL0, OCASC[0].L); gl.uniform1f(u.uL1, OCASC[1].L); gl.uniform1f(u.uHm, ocean.hmax + 0.5 + ocean.surf*1.6);   // bound on |water height|: cascades + wake + surf crests gl.uniform1f(u.uWhite, ocean.white);
   gl.uniform1f(u.uNear, NEAR); gl.uniform1f(u.uFar, FAR);
-  const E0 = ellipsoid([0,0.34,0.0],[0.40,0.30,1.30]), E1 = ellipsoid([0,1.12,0.45],[0.26,0.56,0.34]);
+  const E0 = CRAFT.id === 'sit' ? ellipsoid([0,0.42,0.1],[0.62,0.36,1.7]) : ellipsoid([0,0.34,0.0],[0.40,0.30,1.30]);
+  const E1 = CRAFT.id === 'sit' ? ellipsoid([0,1.3,0.15],[0.3,0.5,0.32]) : ellipsoid([0,1.12,0.45],[0.26,0.56,0.34]);
   gl.uniformMatrix3fv(u.uEllM, false, new Float32Array([...E0[0], ...E1[0]])); gl.uniform3fv(u.uEllC, new Float32Array([...E0[1], ...E1[1]]));
   fullscreen();
   if (Q.has('bench') && frames === 25) runBench(B, t);

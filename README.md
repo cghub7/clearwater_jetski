@@ -2,7 +2,7 @@
 
 DEMO: https://clearwaterjetski.vercel.app/
 
-Clearwater Jetski is a jetski simulator with real water physics, in a single HTML file. It uses WebGL2, with no libraries, no build step and no install. It's built on [Clearwater](https://github.com/Aureliengmz/clearwater), Aurélien's real-time photoreal water renderer.
+Clearwater Jetski is a jetski simulator with real water physics, in a single HTML file. Pick your jetski on the start screen: the **stand-up racer** (160 hp, ridden standing and leaned hard) or the **sit-down cruiser** (300 hp, seated, faster and more stable). It uses WebGL2, with no libraries, no build step and no install. It's built on [Clearwater](https://github.com/Aureliengmz/clearwater), Aurélien's real-time photoreal water renderer.
 
 ![Riding the surf in rough seas](media/jetski.jpg)
 
@@ -41,7 +41,7 @@ It needs WebGL2 with float render targets. Graphics has four presets (Low, Mediu
 
 - **Ocean.** Two FFT wave cascades run on the CPU: a JONSWAP wind sea plus swell, at 256 m and 27 m. The physics and the renderer use the same heights, so the waves you see are the waves you hit. Clearwater's GPU cascade adds fine detail. Waves damp over shallows, and steep crests make whitecaps.
 - **Surf.** A long-period swell shoals over the beach profile using linear finite-depth theory. The wavenumber, phase and shoaling gain are tabulated once and shared with the shader as a texture. Near the break point the wave steepens and peaks, its height saturates at 0.78 × depth, and it breaks into white water.
-- **Jetski physics.** A stand-up race ski: 2.55 m hull with the rider standing in a recessed tray, 160 hp, 330 kg with the rider, as a rigid body. Every triangle of the hull gets hydrostatic pressure, hydrodynamic pressure and suction, plus skin friction. Planing, porpoising, slamming and airtime all come out of that model. The jet pump vectors its thrust to steer and loses grip when the intake leaves the water. Keel and sponson foils give the hull its bite, and the rider balances, leans into turns and soaks up pitching with their knees. The tray is part of the hull shape, so water in it pushes the ski down.
+- **Jetski physics.** Two craft share the hydrodynamics: a stand-up race ski (2.55 m hull with the rider standing in a recessed tray, 160 hp, 330 kg with the rider) and a sit-down cruiser (3.3 m, 300 hp, 430 kg), each a rigid body with its own hull, pump and rider handling. Every triangle of the hull gets hydrostatic pressure, hydrodynamic pressure and suction, plus skin friction. Planing, porpoising, slamming and airtime all come out of that model. The jet pump vectors its thrust to steer and loses grip when the intake leaves the water. Keel and sponson foils give the hull its bite, and the rider balances, leans into turns and soaks up pitching with their knees. The tray is part of the hull shape, so water in it pushes the ski down.
 - **Wake.** A dispersive wave solver in Fourier space (eWave-style, exact deep-water dispersion `ω = √(gk)`) runs in a 72 m window that follows the ski. It's driven by the hull's measured lift spread over its wetted footprint, so you get a Kelvin V wake while moving and rings when you land. The heights are read back to the CPU every frame, so the ski can ride its own wake.
 - **World.** A sandy beach with swash, wet sand, a strand line and dunes, backed by wooded hills. The bay floor deepens offshore, and there are rocky islands with pebble coves. The terrain uses the same formula in JS and GLSL, so collisions match what you see.
 - **Rendering.** Clearwater's water shading (Fresnel, absorption, refracted caustics, sun glints, lens glare) extended with a combined water/terrain ray march. Also spray particles, a modelled jetski and animated rider, and a synthesized engine sound.
@@ -52,6 +52,7 @@ It needs WebGL2 with float render targets. Graphics has four presets (Low, Mediu
 | `?fp` | Start in first person |
 | `?wake=512` | Force the finer wake grid (Ultra uses it; the default is 256²) |
 | `?view=wake` / `?view=surf` | Debug maps of the wake and surf height fields |
+| `?craft=sit` / `?craft=stand` | Start on a specific jetski |
 | `?auto` | Autopilot |
 | `?bench` | Log the GPU time of each render stage to the console |
 
