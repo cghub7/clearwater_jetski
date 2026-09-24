@@ -54,6 +54,10 @@
   #go { margin-top:16px; text-align:center; font-weight:600; padding:10px; border-radius:999px; background:rgba(255,255,255,.16); }
   #card .cr { margin-top:12px; font-size:11px; opacity:.55; text-align:center; }
   #card .cr a { color:inherit; }
+  #mbtns { position:fixed; top:calc(14px + env(safe-area-inset-top,0px)); right:calc(14px + env(safe-area-inset-right,0px)); z-index:7; display:none; gap:8px; }
+  #mbtns button { font:600 14px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color:var(--ink); border:0; padding:11px 15px;
+    border-radius:999px; -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
+  #mbtns button:active { background:rgba(255,255,255,.22); }
   #touch { position:fixed; inset:0; z-index:4; display:none; pointer-events:none; }
   #touch .pad { position:absolute; bottom:calc(24px + env(safe-area-inset-bottom,0px)); width:120px; height:120px; border-radius:50%;
     border:1.5px solid rgba(255,255,255,.35); background:rgba(10,30,30,.15); }
@@ -75,6 +79,7 @@
 <div id="mode" class="glass"></div>
 <div id="air"></div>
 <div id="msg" class="glass"></div>
+<div id="mbtns"><button id="bSea" class="glass">Sea: Light chop</button><button id="bCam" class="glass">Camera</button></div>
 <div id="touch"><div class="pad l"></div><div class="pad r"></div></div>
 <div id="start">
   <div id="card" class="glass">
@@ -86,7 +91,7 @@
       <tr><td><kbd>Q</kbd> <kbd>E</kbd></td><td>Trim nose down / up; lean in the air</td></tr>
       <tr><td><kbd>Shift</kbd></td><td>Stand up and lean forward: sharper turns</td></tr>
       <tr><td><kbd>C</kbd></td><td>Camera: chase / first person</td></tr>
-      <tr><td><kbd>1</kbd>–<kbd>4</kbd></td><td>Sea state: glassy → rough</td></tr>
+      <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Sea state: glassy → surf (Sea button on mobile)</td></tr>
       <tr><td><kbd>R</kbd> · <kbd>M</kbd> · <kbd>H</kbd></td><td>Reset · mute · this help</td></tr>
       <tr><td>Mouse drag / wheel</td><td>Look around / zoom</td></tr>
       <tr><td>Gamepad</td><td>Stick steer, RT gas, LT brake, Y camera, B reset</td></tr>
@@ -167,6 +172,7 @@ const SEAS = [ // wind sea Hs/Tp, swell Hs/Tp (m, s), whitecaps
   { name:'Light chop', Hw:0.32, Tw:2.8, Hs:0.30, Ts:8.0,  white:0.15, surf:0.75 },
   { name:'Choppy',     Hw:0.95, Tw:4.2, Hs:0.55, Ts:9.5,  white:0.55, surf:0.95 },
   { name:'Rough',      Hw:1.70, Tw:5.6, Hs:0.85, Ts:11.0, white:1.0, surf:1.25 },
+  { name:'Surf',       Hw:2.20, Tw:6.5, Hs:1.40, Ts:12.0, white:1.0, surf:2.0 },   // big breaking surf on the beach
 ];
 const WIND_DIR = Math.atan2(0.96, 0.28), SWELL_DIR = Math.atan2(0.85, -0.53); // travel directions: onshore (+z)
 function jonswap(w, wp, gamma){ const sg = w<=wp? 0.07 : 0.09; const r = Math.exp(-(w-wp)*(w-wp)/(2*sg*sg*wp*wp));
@@ -2143,11 +2149,16 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyR') resetSki();
   if (e.code === 'KeyM') { muted = !muted; if (audio.master) audio.master.gain.value = muted ? 0 : 0.6; flash(muted ? 'Sound off' : 'Sound on', 1.2); }
   if (e.code === 'KeyH' || e.code === 'Escape') $start.hidden = !$start.hidden;
-  if (/^Digit[1-4]$/.test(e.code)){ const i = +e.code.slice(5)-1; ocean.setSea(i); flash('Sea state: ' + SEAS[i].name); }
+  if (/^Digit[1-5]$/.test(e.code)) setSeaState(+e.code.slice(5)-1);
   if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
 });
 addEventListener('keyup', e => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
+const $bSea = document.getElementById('bSea');
+$bSea.textContent = 'Sea: ' + SEAS[ocean.sea].name;
+function setSeaState(i){ ocean.setSea(i); flash('Sea state: ' + SEAS[i].name); $bSea.textContent = 'Sea: ' + SEAS[i].name; }
+$bSea.addEventListener('click', e => { e.stopPropagation(); start(); setSeaState((ocean.sea + 1) % SEAS.length); });
+document.getElementById('bCam').addEventListener('click', e => { e.stopPropagation(); start(); cycleCam(); });
 function cycleCam(){ camMode = (camMode+1)%2; flash(camMode ? 'First person' : 'Chase camera', 1.2); cam.init = false; }
 function resetSki(){
   const p = ski.p; let x = p[0], z = p[2];
@@ -2172,7 +2183,7 @@ canvas2.addEventListener('wheel', e => { cam.dist = clamp(cam.dist*Math.exp(e.de
 // touch: left pad steers, right pad is the throttle
 const touch = { steerId:null, steerX:0, steer:0, gasId:null };
 const hasTouch = 'ontouchstart' in window;
-if (hasTouch) document.getElementById('touch').style.display = 'block';
+if (hasTouch){ document.getElementById('touch').style.display = 'block'; document.getElementById('mbtns').style.display = 'flex'; }
 function touchCtl(e, down){
   if (!hasTouch) return false;
   if (down){
@@ -2362,16 +2373,18 @@ function emitSpray(dt){
            mist ? 0.9 + rnd01()*0.8 : 0.5 + rnd01()*0.7, mist ? 0.12 + 0.1*rnd01() : 0.025 + 0.035*rnd01(), mist ? 1 : 0, mist ? 0.28 : 0.9);
     }
   }
-  // rooster tail: the jet breaks the surface when the stern rides high or leaves the water
-  const T = Math.max(ski.thrust, 0), nzD = ski.nozzleDepth, ex = clamp((0.30 - nzD)/0.3, 0, 1);
-  const jetK = (ski.thr > 0.2 ? ski.thr : 0) * (T > 200 ? 1 : (ski.vent < 0.5 && ski.rpm > 4000 ? 0.6 : 0));
-  if (jetK > 0 && ex > 0){
-    const n = ski.nozzleW, rpmN = ski.rpm/SKI.rpmMax, cnt = Math.floor(jetK*ex*900*rpmN*dt + rnd01());
+  // jet wash: the pump exits at the waterline, so it only throws water when the nozzle breaks the surface (stern
+  // riding high, hopping, just after take-off). Then it is a low, flat stream heading back down the track at
+  // (jet speed - boat speed); the rest of the time the churn shows as foam on the water.
+  const rpmN = ski.rpm/SKI.rpmMax, breach = clamp((0.08 - ski.nozzleDepth)/0.25, 0, 1);
+  if (ski.thr > 0.2 && ski.rpm > 3500 && ski.airT < 0.35 && breach > 0){
+    const n = ski.nozzleW, vjRel = SKI.vJet*rpmN, cnt = Math.floor(breach*260*rpmN*ski.thr*dt + rnd01());
     for (let i=0;i<cnt;i++){
-      const vj = 6 + 12*rpmN*rnd01(), mist = rnd01() < 0.4;
-      emit(n[0] - fwd[0]*0.2, n[1], n[2] - fwd[2]*0.2,
-           v[0] - fwd[0]*vj + (rnd01()-0.5)*2.2, 2.5 + 5*rnd01()*rpmN, v[2] - fwd[2]*vj + (rnd01()-0.5)*2.2,
-           mist ? 1.0 + rnd01() : 0.6 + 0.6*rnd01(), mist ? 0.15 + 0.15*rnd01() : 0.03 + 0.04*rnd01(), mist ? 1 : 0, mist ? 0.25 : 0.85);
+      const k = 0.75 + 0.4*rnd01(), mist = rnd01() < 0.15, side = (rnd01()-0.5)*(1.2 + 3.0*breach), rx = -fwd[2], rz = fwd[0];
+      const ox = (rnd01()-0.5)*0.22;
+      emit(n[0] - fwd[0]*0.15 + rx*ox, n[1] + 0.02, n[2] - fwd[2]*0.15 + rz*ox,
+           v[0] - fwd[0]*vjRel*k + rx*side, v[1]*0.5 + 0.2 + 1.8*rnd01()*rnd01(), v[2] - fwd[2]*vjRel*k + rz*side,
+           mist ? 0.5 + 0.4*rnd01() : 0.35 + 0.35*rnd01(), mist ? 0.07 + 0.05*rnd01() : 0.012 + 0.018*rnd01(), mist ? 1 : 0, mist ? 0.18 : 0.7);
     }
   }
   // landing / slam

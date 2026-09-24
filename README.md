@@ -25,10 +25,11 @@ It needs WebGL2 with float render targets. Resolution adapts to keep the frame r
 | `Q` / `E` | Trim the nose down / up; pitch in the air |
 | `Shift` | Stand and lean forward for sharper turns |
 | `C` | Chase / first-person camera |
-| `1`–`4` | Sea state: glassy, light chop, choppy, rough |
+| `1`–`5` | Sea state: glassy, light chop, choppy, rough, surf (big breaking waves) |
 | `R` · `M` · `H` | Reset · mute · help |
 | Mouse drag / wheel | Look around / zoom |
 | Gamepad | Stick steers, RT gas, LT brake, Y camera, B reset |
+| Touch | Left pad steers, GAS pad throttles; **Sea** and **Camera** buttons at the top right |
 
 **Things to try**
 - **Jump the surf.** Turn around and head for the beach. Wait just outside the white water for a set (a bigger wave arrives every seventh), then ride out straight into it at full throttle.
