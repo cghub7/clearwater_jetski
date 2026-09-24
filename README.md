@@ -1,5 +1,7 @@
 # Clearwater Jetski
 
+DEMO: https://clearwaterjetski.vercel.app/
+
 Clearwater Jetski is a jetski simulator with real water physics, in a single HTML file. It uses WebGL2, with no libraries, no build step and no install. It's built on [Clearwater](https://github.com/Aureliengmz/clearwater), Aurélien's real-time photoreal water renderer.
 
 ![Riding the surf in rough seas](media/jetski.jpg)
