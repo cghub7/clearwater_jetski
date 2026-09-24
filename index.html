@@ -1236,20 +1236,35 @@ ${ISLANDS.map(I => `  slab(ro, rd, vec2(${I.x.toFixed(1)},${I.z.toFixed(1)}), ${
   if (iv.x >= iv.y) return 1e9;
   float t = iv.x, tp = t, dp = 1e5;
   tSafe = t;
-  float kx = 1.0/(abs(rd.y) + 1.1*length(rd.xz));
-  for (int i=0;i<90;i++){
+  float kx = 1.0/(abs(rd.y) + 0.9*length(rd.xz));
+  // rays skimming low over the beach need many small steps; steps are cheap (one texture fetch), so the budget is
+  // generous, and a coarse second pass guarantees a ray never gives up before reaching the land it is aimed at
+  for (int i=0;i<240;i++){
     if (t > iv.y) break;
     vec3 p = ro + rd*t;
     float d = p.y - groundMarch(p.xz, t);
     if (d < 0.0){
       if (dp > 1e4) { hit = true; return t; }
       float a = tp, b = t;
-      for (int j=0;j<7;j++){ float m = 0.5*(a+b); vec3 q = ro+rd*m; if (q.y - groundH(q.xz) < 0.0) b = m; else a = m; }
+      for (int j=0;j<8;j++){ float m = 0.5*(a+b); vec3 q = ro+rd*m; if (q.y - groundH(q.xz) < 0.0) b = m; else a = m; }
       hit = true; return 0.5*(a+b);
     }
-    if (p.y > 45.0 && rd.y > 0.0) break;
+    if (p.y > 45.0 && rd.y > 0.0) return 1e9;
     tp = t; dp = d; tSafe = t;
-    t += clamp(d*kx*0.8, 0.03 + 0.012*t, 80.0);
+    t += clamp(d*kx*0.8, 0.03 + 0.016*t, 80.0);
+  }
+  for (int i=0;i<32;i++){
+    if (t > iv.y) break;
+    vec3 p = ro + rd*t;
+    float d = p.y - groundMarch(p.xz, t);
+    if (d < 0.0){
+      float a = tp, b = t;
+      for (int j=0;j<10;j++){ float m = 0.5*(a+b); vec3 q = ro+rd*m; if (q.y - groundH(q.xz) < 0.0) b = m; else a = m; }
+      hit = true; return 0.5*(a+b);
+    }
+    if (p.y > 45.0 && rd.y > 0.0) return 1e9;
+    tp = t; tSafe = t;
+    t += max(d*kx, 0.1*t);
   }
   return 1e9;
 }
