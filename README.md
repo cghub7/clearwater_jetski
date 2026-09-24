@@ -8,12 +8,12 @@ Clearwater Jetski is a jetski simulator with real water physics, in a single HTM
 
 ## Play
 
-Download [`jetski.html`](jetski.html) and open it in a desktop browser (Chrome, Edge or Firefox) on a computer with a graphics card. Click or press any key to start riding.
+Play the [demo](https://clearwaterjetski.vercel.app/) in a desktop browser (Chrome, Edge or Firefox) on a computer with a graphics card, or download [`index.html`](index.html) and open it. Click or press any key to start riding.
 
-Or clone the repository and open `jetski.html` from it:
+Or clone the repository and open `index.html` from it:
 
 ```
-git clone https://github.com/cghub7/clearwater
+git clone https://github.com/cghub7/clearwater_jetski
 ```
 
 It needs WebGL2 with float render targets. Resolution adapts to keep the frame rate up.
@@ -40,7 +40,7 @@ It needs WebGL2 with float render targets. Resolution adapts to keep the frame r
 - **Ocean.** Two FFT wave cascades run on the CPU: a JONSWAP wind sea plus swell, at 256 m and 27 m. The physics and the renderer use the same heights, so the waves you see are the waves you hit. Clearwater's GPU cascade adds fine detail. Waves damp over shallows, and steep crests make whitecaps.
 - **Surf.** A long-period swell shoals over the beach profile using linear finite-depth theory. The wavenumber, phase and shoaling gain are tabulated once and shared with the shader as a texture. Near the break point the wave steepens and peaks, its height saturates at 0.78 × depth, and it breaks into white water.
 - **Jetski physics.** A 430 kg rigid body. Every triangle of the hull gets hydrostatic pressure, hydrodynamic pressure and suction, plus skin friction. Planing, porpoising, slamming and airtime all come out of that model. The jet pump vectors its thrust to steer and loses grip when the intake leaves the water. Keel and sponson foils give the hull its bite, and the rider balances and leans into turns.
-- **Wake.** A dispersive wave solver in Fourier space (eWave-style, exact deep-water dispersion `ω = √(gk)`) runs in a 96 m window that follows the ski. It's driven by the hull's measured lift spread over its wetted footprint, so you get a Kelvin V wake while moving and rings when you land. The heights are read back to the CPU every frame, so the ski can ride its own wake.
+- **Wake.** A dispersive wave solver in Fourier space (eWave-style, exact deep-water dispersion `ω = √(gk)`) runs in a 72 m window that follows the ski. It's driven by the hull's measured lift spread over its wetted footprint, so you get a Kelvin V wake while moving and rings when you land. The heights are read back to the CPU every frame, so the ski can ride its own wake.
 - **World.** A sandy beach with swash, wet sand, a strand line and dunes, backed by wooded hills. The bay floor deepens offshore, and there are rocky islands with pebble coves. The terrain uses the same formula in JS and GLSL, so collisions match what you see.
 - **Rendering.** Clearwater's water shading (Fresnel, absorption, refracted caustics, sun glints, lens glare) extended with a combined water/terrain ray march. Also spray particles, a modelled jetski and animated rider, and a synthesized engine sound.
 
@@ -48,17 +48,18 @@ It needs WebGL2 with float render targets. Resolution adapts to keep the frame r
 | --- | --- |
 | `?debug` | Frame rate, resolution, jetski state |
 | `?fp` | Start in first person |
-| `?wake=256` | Lighter wake grid (the default on phones) |
+| `?wake=512` | Finer wake grid for fast GPUs (the default is 256²) |
 | `?view=wake` / `?view=surf` | Debug maps of the wake and surf height fields |
 | `?auto` | Autopilot |
+| `?bench` | Log the GPU time of each render stage to the console |
 
 ## Clearwater
 
-The original renderer is still here as [`index.html`](index.html): real-time, photoreal shallow water with FFT waves, refracted light caustics with dispersion, physically based Fresnel and sun glints, lens-diffraction glare and interactive ripples. See the [upstream repository](https://github.com/Aureliengmz/clearwater) and its [live demo](https://aureliengmz.github.io/clearwater/).
+Clearwater is Aurélien's real-time, photoreal shallow-water renderer: FFT waves, refracted light caustics with dispersion, physically based Fresnel and sun glints, lens-diffraction glare and interactive ripples. The original lives in the [upstream repository](https://github.com/Aureliengmz/clearwater), with its own [live demo](https://aureliengmz.github.io/clearwater/).
 
 ![Clearwater](media/landscape.png)
 
-The seabed texture is base64 in `<script id="pebbles-texture">` at the end of each HTML file. To regenerate it, run `python tools/make_pebbles.py` (needs numpy, scipy and pillow).
+The seabed texture is base64 in `<script id="pebbles-texture">` at the end of `index.html`. To regenerate it, run `python tools/make_pebbles.py` (needs numpy, scipy and pillow).
 
 ## References
 
