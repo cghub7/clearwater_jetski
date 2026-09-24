@@ -2,7 +2,7 @@
   "name": "clearwater-jetski",
   "version": "1.0.0",
   "description": "Clearwater Jetski - A jetski simulator with real water physics",
-  "main": "jetski.html",
+  "main": "index.html",
   "scripts": {
     "test": "echo \"No tests specified\""
   },
