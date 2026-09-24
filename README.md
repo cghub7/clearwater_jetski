@@ -30,7 +30,7 @@ It needs WebGL2 with float render targets. Graphics has four presets (Low, Mediu
 | `R` · `M` · `H` | Reset · mute · help |
 | Mouse drag / wheel | Look around / zoom |
 | Gamepad | Stick steers, RT gas, LT brake, Y camera, B reset |
-| Touch | Left pad steers, GAS pad throttles; **Sea** and **Camera** buttons at the top right |
+| Touch | Left pad steers, GAS pad throttles; **Sea**, **Camera** and **Gfx** buttons at the top right; tap the bottom-left pill for the menu (switch jetski); a **Flip upright** button appears when you capsize |
 
 **Things to try**
 - **Jump the surf.** Turn around and head for the beach. Wait just outside the white water for a set (a bigger wave arrives every seventh), then ride out straight into it at full throttle.

@@ -62,8 +62,15 @@
   #go { margin-top:16px; text-align:center; font-weight:600; padding:10px; border-radius:999px; background:rgba(255,255,255,.16); }
   #card .cr { margin-top:12px; font-size:11px; opacity:.55; text-align:center; }
   #card .cr a { color:inherit; }
+  #bFlip { position:fixed; left:50%; top:58%; transform:translateX(-50%); z-index:8; display:none; border:0; color:var(--ink);
+    font:700 18px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; padding:16px 26px; border-radius:999px; cursor:pointer;
+    background:rgba(10,30,30,.55); box-shadow:0 0 0 2px rgba(184,242,90,.7); -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
+  #bFlip.show { display:block; }
   #mbtns { position:fixed; top:calc(14px + env(safe-area-inset-top,0px)); right:calc(14px + env(safe-area-inset-right,0px)); z-index:7; display:flex; gap:8px; }
   #mbtns .tonly { display:none; } body.touch #mbtns .tonly { display:block; }
+  body.touch #mbtns { right:calc(10px + env(safe-area-inset-right,0px)); gap:6px; }
+  body.touch #mbtns button { font-size:13px; padding:9px 12px; white-space:nowrap; }
+  body.touch #mode { pointer-events:auto; cursor:pointer; }
   #mbtns button { font:600 14px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color:var(--ink); border:0; padding:11px 15px;
     border-radius:999px; -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
   #mbtns button:active { background:rgba(255,255,255,.22); }
@@ -88,6 +95,7 @@
 <div id="mode" class="glass"></div>
 <div id="air"></div>
 <div id="msg" class="glass"></div>
+<button id="bFlip" class="glass">↻ Flip upright</button>
 <div id="mbtns"><button id="bSea" class="glass tonly">Sea: Light chop</button><button id="bCam" class="glass tonly">Camera</button><button id="bGfx" class="glass">Graphics: High</button></div>
 <div id="touch"><div class="pad l"></div><div class="pad r"></div></div>
 <div id="start">
@@ -2334,7 +2342,7 @@ function post(t){
 
 
 /* ---------------- Game state ---------------- */
-const VERSION = '1.7.0';
+const VERSION = '1.7.1';
 document.getElementById('ver').textContent = 'v' + VERSION;
 const SUN_EL = 31*Math.PI/180, SUN_AZ = 6*Math.PI/180;
 const SUNV = [Math.sin(SUN_AZ)*Math.cos(SUN_EL), Math.sin(SUN_EL), -Math.cos(SUN_AZ)*Math.cos(SUN_EL)];
@@ -2366,6 +2374,7 @@ let tSim = 0, started = false, camMode = Q.has('fp') ? 1 : 0, muted = false;
 const AUTO = Q.has('auto');
 // test hooks: ?pre=6 simulates 6 s of full-throttle riding before the first frame, ?dt=0.033 fixes the frame step
 const FIXED_DT = Q.has('dt') ? +Q.get('dt') : 0;
+if (Q.has('flipped')){ ski.q = [0, 0, 1, 0]; ski.p[1] += 0.6; }     // test hook: start capsized
 if (Q.has('pre')){
   const T = +Q.get('pre'), steer = Q.has('presteer') ? +Q.get('presteer') : 0;
   for (let t=0; t<T; t+=1/60){ ocean.update(t, 1/60); ski.thr = 1; ski.steer = t > T-2 ? steer : 0;
@@ -2400,9 +2409,12 @@ addEventListener('keyup', e => keys.delete(e.code));
 addEventListener('blur', () => keys.clear());
 const $bSea = document.getElementById('bSea');
 $bSea.textContent = 'Sea: ' + SEAS[ocean.sea].name;
+document.getElementById('mode').addEventListener('click', () => { if (hasTouch) $start.hidden = false; });   // no H key on touch screens
 function setSeaState(i){ ocean.setSea(i); flash('Sea state: ' + SEAS[i].name); $bSea.textContent = 'Sea: ' + SEAS[i].name; }
 $bSea.addEventListener('click', e => { e.stopPropagation(); start(); setSeaState((ocean.sea + 1) % SEAS.length); });
 document.getElementById('bCam').addEventListener('click', e => { e.stopPropagation(); start(); cycleCam(); });
+const $bFlip = document.getElementById('bFlip');
+$bFlip.addEventListener('click', e => { e.stopPropagation(); resetSki(); capsizeT = 0; $bFlip.classList.remove('show'); });
 function cycleCam(){ camMode = (camMode+1)%2; flash(camMode ? 'First person' : 'Chase camera', 1.2); cam.init = false; }
 function resetSki(){
   const p = ski.p; let x = p[0], z = p[2];
@@ -2653,14 +2665,20 @@ function updateHUD(dt){
   if (msgT > 0){ msgT -= dt; if (msgT <= 0) $msg.classList.remove('on'); }
   if (ski.lastAir > 0.55 && ski.airT === 0){ $air.textContent = `AIR ${ski.lastAir.toFixed(1)} s`; $air.classList.add('on'); airShown = 1.6; ski.lastAir = 0; }
   if (airShown > 0){ airShown -= dt; if (airShown <= 0) $air.classList.remove('on'); }
-  if (ski.R[4] < 0.15){ capsizeT += dt; if (capsizeT > 2.0 && msgT <= 0) flash('Capsized! Press R to right the jetski', 3); } else capsizeT = 0;
+  // capsized: offer a button (works on touch screens, where there is no R key)
+  if (ski.R[4] < 0.15){ capsizeT += dt; } else capsizeT = 0;
+  const showFlip = capsizeT > 1.2;
+  if (showFlip !== $bFlip.classList.contains('show')){
+    $bFlip.classList.toggle('show', showFlip);
+    if (showFlip) flash(hasTouch ? 'Capsized! Tap to flip upright' : 'Capsized! Press R or click to flip upright', 3);
+  }
   if ((hudTick++ % 4) !== 0) return;
   const kmh = Math.max(0, ski.speed*3.6);
   $spd.innerHTML = `${kmh.toFixed(0)}<small>km/h</small>`;
   $sub.textContent = `${(kmh/1.609).toFixed(0)} mph · ${(kmh/1.852).toFixed(0)} kn${ski.brake > ski.thr && ski.brake > 0.1 ? ' · REVERSE' : ''}`;
   $rpm.style.width = `${clamp(ski.rpm/SKI.rpmLimit, 0, 1)*100}%`; $rpmv.textContent = Math.round(ski.rpm/10)*10;
   $trim.style.left = `${(ski.trim - SKI.trimMin)/(SKI.trimMax - SKI.trimMin)*100}%`;
-  $mode.innerHTML = `<b>${CRAFT.name}</b> · ${camMode ? 'First person' : 'Chase'} · ${SEAS[ocean.sea].name} · <kbd>H</kbd> help`;
+  $mode.innerHTML = `<b>${CRAFT.name}</b> · ${camMode ? 'First person' : 'Chase'} · ${SEAS[ocean.sea].name} · ${hasTouch ? 'tap for menu' : '<kbd>H</kbd> help'}`;
 }
 
 /* ---------------- ?bench: time each GPU stage in isolation (gl.finish around N repeats) ---------------- */
@@ -2703,9 +2721,10 @@ function applyGfx(i, why){
   gfxGlare = g.glare; gfxGlareEvery = g.glareEvery; gfxCausEvery = g.causEvery;
   if (!Q.has('wake')) pendingWake = g.wake;
   pendingAlloc = true;
-  $bGfx.textContent = 'Graphics: ' + g.name + (gfxAuto ? ' (auto)' : '');
+  $bGfx.textContent = gfxLabel();
   if (why) flash('Graphics: ' + g.name + (why === 'auto' ? ' (picked automatically)' : ''), 1.6);
 }
+function gfxLabel(){ return hasTouch ? 'Gfx: ' + GFX[gfxLevel].name : 'Graphics: ' + GFX[gfxLevel].name + (gfxAuto ? ' (auto)' : ''); }
 function chooseGfx(i){ gfxAuto = false; try { localStorage.setItem('cwj.gfx', String(i)); } catch(e){} applyGfx(i, 'user'); }
 { let saved = null; try { saved = localStorage.getItem('cwj.gfx'); } catch(e){}
   if (saved !== null && GFX[+saved]){ gfxAuto = false; applyGfx(+saved); }
@@ -2721,7 +2740,7 @@ function autoGfx(dt){
   if (autoFrames < 45 + 90) return;
   const ms = autoSum/90*1000; autoFrames = 0; autoSum = 0; autoSteps++;
   if (ms > 21 && gfxLevel > 0 && autoSteps < 4) applyGfx(gfxLevel - 1, 'auto');
-  else { gfxAuto = false; $bGfx.textContent = 'Graphics: ' + GFX[gfxLevel].name; }
+  else { gfxAuto = false; $bGfx.textContent = gfxLabel(); }
 }
 window.addEventListener('resize', () => { pendingAlloc = true; });
 const NEAR = 0.06, FAR = 4000;
