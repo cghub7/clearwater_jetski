@@ -1648,7 +1648,7 @@ const COL = {
   trayWall: lin(0.09,0.09,0.10,0.3), mat: lin(0.26,0.27,0.28,0.08), metal: lin(0.60,0.61,0.63,0.85), dark: lin(0.12,0.12,0.13,0.5),
   white: lin(0.92,0.92,0.92,0.6), rubber: lin(0.05,0.05,0.05,0.2),
   skin: lin(0.80,0.60,0.46,0.25), vest: lin(0.93,0.93,0.93,0.35), vestDark: lin(0.08,0.08,0.09,0.35), pants: lin(0.06,0.06,0.07,0.35),
-  helmet: lin(0.55,0.90,0.10,0.9), helmetWhite: lin(0.95,0.95,0.95,0.9), visor: lin(0.05,0.05,0.05,0.9), lens: lin(0.55,0.35,0.08,0.95),
+  helmet: lin(0.55,0.90,0.10,0.92), helmetWhite: lin(0.95,0.95,0.95,0.9), visor: lin(0.05,0.05,0.055,0.7), lens: lin(0.95,0.45,0.10,0.98),
   glove: lin(0.50,0.88,0.10,0.35),
 };
 // hull as colour strips (crisp creases at chines, rail and tray edge); the livery changes colour exactly at stations
@@ -1709,6 +1709,52 @@ function ik2(A, T, l1, l2, pole){
   let p = [pole[0], pole[1], pole[2]]; const pd = p[0]*d[0]+p[1]*d[1]+p[2]*d[2]; p = p.map((x,i)=>x-d[i]*pd); const pl = Math.hypot(...p)||1; p = p.map(x=>x/pl);
   return [A[0]+d[0]*a+p[0]*h, A[1]+d[1]*a+p[1]*h, A[2]+d[2]*a+p[2]*h];
 }
+// Motocross helmet: elongated shell with a chin bar jutting forward and down, a wide eye port (dark liner behind),
+// mirrored goggles in the port with the strap around the back, chin vents and a long peak. Local frame: x right,
+// y up, z forward, origin at the head centre; X maps local points into the rider's frame.
+function helmetPoint(th, ph, k=1){
+  const c = Math.cos(th), sn = Math.sin(th), front = Math.max(Math.cos(ph), 0), fr2 = front*front, back = Math.max(-Math.cos(ph), 0);
+  const low = smoothstep(-0.05, -0.8, th);
+  let x = 0.132*c*Math.sin(ph), y = 0.150*sn + 0.018, z = 0.162*c*Math.cos(ph) - 0.012;
+  const beak = low*Math.pow(front, 3);
+  z += 0.125*beak; y -= 0.065*beak; x *= 1 - 0.30*low*fr2;                  // chin bar: a beak, forward and down
+  z -= 0.035*back*smoothstep(0.35, -0.6, th);                               // longer back, neck lip
+  y += 0.012*smoothstep(0.9, 1.4, th)*front;                                // raised brow ridge
+  return [x*k, y*k, z*k];
+}
+function mbGrid(m, NU, NV, point, skip, X){
+  const idx = [];
+  for (let v=0; v<=NV; v++){ idx.push([]); for (let u=0; u<=NU; u++){ const q = point(u/NU, v/NV); idx[v].push(mbVert(m, X(q.p), q.c)); } }
+  for (let v=0; v<NV; v++) for (let u=0; u<NU; u++){
+    if (skip && skip((u+0.5)/NU, (v+0.5)/NV)) continue;
+    const a = idx[v][u], b = idx[v][u+1], c = idx[v+1][u], d = idx[v+1][u+1];
+    m.i.push(a, c, b, b, c, d);
+  }
+}
+function mbHelmet(m, X){
+  const TH0 = -1.12, TH1 = Math.PI/2 - 0.02;
+  const th = v => TH0 + (TH1 - TH0)*v, ph = u => (u - 0.5)*2*Math.PI;
+  const eyePort = (t, p) => Math.cos(p) > 0.60 && t > -0.24 && t < 0.36;
+  // shell: lime green, black chin bar and lower rim, black goggle strap, dark chin vents
+  mbGrid(m, 32, 18, (u, v) => {
+    const t = th(v), p = ph(u), cp = Math.cos(p);
+    let c = t < -0.34 + 0.55*(1 - cp)/2 ? COL.visor : COL.helmet;           // black lower section sweeping up at the back
+    if (t > 0.55 && t < 0.78 && cp < 0.5) c = COL.helmetWhite;               // white band over the crown
+    if (Math.abs(p) > 1.0 && t > -0.14 && t < 0.13) c = COL.visor;           // goggle strap
+    if (cp > 0.93 && t > -0.9 && t < -0.5) c = COL.dark;                      // chin vents
+    return { p: helmetPoint(t, p), c };
+  }, (u, v) => eyePort(th(v), ph(u)), X);
+  // liner seen through the eye port
+  mbGrid(m, 16, 8, (u, v) => ({ p: helmetPoint(-0.35 + 0.85*v, (u - 0.5)*2.2, 0.92), c: COL.dark }), null, X);
+  // goggles sitting in the port: mirrored lens with a dark frame
+  mbGrid(m, 16, 5, (u, v) => { const t = -0.2 + 0.5*v, p = (u - 0.5)*1.85;
+    const edge = u < 0.08 || u > 0.92 || v < 0.15 || v > 0.85;
+    return { p: helmetPoint(t, p, 0.975), c: edge ? COL.visor : COL.lens }; }, null, X);
+  // peak: a long plate from the brow, angled up at the front
+  mbGrid(m, 12, 4, (u, v) => { const p = (u - 0.5)*2.1, e = helmetPoint(0.44, p), w = 1.06 - 0.10*v;
+    return { p: [e[0]*w, e[1] + 0.07*v + 0.015*v*(1 - Math.abs(u - 0.5)*2), e[2] + 0.19*v*(0.65 + 0.35*Math.cos(p))], c: v > 0.9 ? COL.visor : COL.helmet }; }, null, X);
+}
+
 // Hinged handle pole + a standing rider in race gear, in hull coordinates.
 // pose: steer (-1..1), lean (rad, + = right, relative to the ski), attack (0..1, Shift), crouch (0..1, landings)
 const POLE_PIVOT = (() => { const s = 0.84, h = hullSection(s); return [0, h[8][1] + 0.03, hullZ(s)]; })();
@@ -1766,13 +1812,7 @@ function buildRider(pose, hideHead){
   if (!hideHead){
     mbCapsule(m, add(chest, sc(up, 0.08)), add(chest, sc(up, 0.16)), 0.055, 0.05, COL.skin, 10, 2);
     const H = (x,y,z) => add(head, add(sc(side,x), add(sc(hUp,y), sc(hF,z))));               // helmet frame (z = forward)
-    mbCapsule(m, H(0,-0.01,0.0), H(0,0.03,-0.02), 0.145, 0.14, COL.helmet, 16, 6);           // shell
-    mbCapsule(m, H(0,0.06,-0.06), H(0,0.07,-0.10), 0.125, 0.11, COL.helmetWhite, 14, 5);    // white crown panel
-    mbCapsule(m, H(-0.075,-0.09,0.10), H(0.075,-0.09,0.10), 0.05, 0.05, COL.helmet, 10, 3);  // chin bar
-    mbCapsule(m, H(0,-0.08,0.13), H(0,-0.1,0.18), 0.04, 0.03, COL.visor, 8, 2);            // mouthpiece vent
-    for (const x of [-0.075, 0, 0.075]) mbCapsule(m, H(x,0.10,0.09), H(x*1.1,0.13,0.24), 0.02, 0.018, COL.visor, 8, 2);   // peak
-    mbCapsule(m, H(-0.085,0.02,0.125), H(0.085,0.02,0.125), 0.036, 0.036, COL.lens, 10, 2); // goggles
-    mbCapsule(m, H(-0.14,0.02,0.02), H(0.14,0.02,0.02), 0.03, 0.03, COL.visor, 8, 2);       // strap
+    mbHelmet(m, p => H(p[0], p[1], p[2]));
   }
   return { geo: mbFinish(m), head, chest, un: up };
 }
