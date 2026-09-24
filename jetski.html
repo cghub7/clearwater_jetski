@@ -1994,7 +1994,7 @@ const keys = new Set();
 const $start = document.getElementById('start'), $msg = document.getElementById('msg'), $air = document.getElementById('air');
 let msgT = 0;
 function flash(text, secs=2.2){ $msg.textContent = text; $msg.classList.add('on'); msgT = secs; }
-function start(){ if (started) return; started = true; $start.hidden = true; initAudio(); flash('Surf is breaking on the beach behind you: turn around to jump the sets', 4.5); }
+function start(){ if (started) return; started = true; $start.hidden = true; initAudio(); if (!Q.has('quiet')) flash('Surf is breaking on the beach behind you: turn around to jump the sets', 4.5); }
 $start.addEventListener('click', start);
 addEventListener('keydown', e => {
   if (e.repeat) { keys.add(e.code); return; }
