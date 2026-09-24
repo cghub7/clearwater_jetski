@@ -99,7 +99,7 @@
       <tr><td>Gamepad</td><td>Stick steer, RT gas, LT brake, Y camera, B reset</td></tr>
     </table>
     <div id="go">Click or press any key to ride</div>
-    <div class="cr">Water renderer: <a href="https://github.com/Aureliengmz/clearwater" target="_blank" rel="noopener">Clearwater</a> by Aurélien · Lumaris</div>
+    <div class="cr"><span id="ver"></span> · Water renderer: <a href="https://github.com/Aureliengmz/clearwater" target="_blank" rel="noopener">Clearwater</a> by Aurélien · Lumaris</div>
   </div>
 </div>
 <div id="dbg" hidden></div>
@@ -2177,6 +2177,8 @@ function post(t){
 
 
 /* ---------------- Game state ---------------- */
+const VERSION = '1.6.0';
+document.getElementById('ver').textContent = 'v' + VERSION;
 const SUN_EL = 31*Math.PI/180, SUN_AZ = 6*Math.PI/180;
 const SUNV = [Math.sin(SUN_AZ)*Math.cos(SUN_EL), Math.sin(SUN_EL), -Math.cos(SUN_AZ)*Math.cos(SUN_EL)];
 const SPAWN = [+(Q.get('sx')||0), shoreZ(+(Q.get('sx')||0)) - (Q.has('ss') ? +Q.get('ss') : 42)];
