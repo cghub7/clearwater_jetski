@@ -23,7 +23,7 @@ It needs WebGL2 with float render targets. Resolution adapts to keep the frame r
 | `W` / `S` or `↑` / `↓` | Throttle / brake and reverse |
 | `A` / `D` or `←` / `→` | Steer (the jet only steers under throttle, like a real one) |
 | `Q` / `E` | Trim the nose down / up; pitch in the air |
-| `Shift` | Stand and lean forward for sharper turns |
+| `Shift` | Attack stance: lean in hard for tighter turns |
 | `C` | Chase / first-person camera |
 | `1`–`5` | Sea state: glassy, light chop, choppy, rough, surf (big breaking waves) |
 | `R` · `M` · `H` | Reset · mute · help |
@@ -40,7 +40,7 @@ It needs WebGL2 with float render targets. Resolution adapts to keep the frame r
 
 - **Ocean.** Two FFT wave cascades run on the CPU: a JONSWAP wind sea plus swell, at 256 m and 27 m. The physics and the renderer use the same heights, so the waves you see are the waves you hit. Clearwater's GPU cascade adds fine detail. Waves damp over shallows, and steep crests make whitecaps.
 - **Surf.** A long-period swell shoals over the beach profile using linear finite-depth theory. The wavenumber, phase and shoaling gain are tabulated once and shared with the shader as a texture. Near the break point the wave steepens and peaks, its height saturates at 0.78 × depth, and it breaks into white water.
-- **Jetski physics.** A 430 kg rigid body. Every triangle of the hull gets hydrostatic pressure, hydrodynamic pressure and suction, plus skin friction. Planing, porpoising, slamming and airtime all come out of that model. The jet pump vectors its thrust to steer and loses grip when the intake leaves the water. Keel and sponson foils give the hull its bite, and the rider balances and leans into turns.
+- **Jetski physics.** A stand-up race ski: 2.55 m hull with the rider standing in a recessed tray, 160 hp, 330 kg with the rider, as a rigid body. Every triangle of the hull gets hydrostatic pressure, hydrodynamic pressure and suction, plus skin friction. Planing, porpoising, slamming and airtime all come out of that model. The jet pump vectors its thrust to steer and loses grip when the intake leaves the water. Keel and sponson foils give the hull its bite, and the rider balances, leans into turns and soaks up pitching with their knees. The tray is part of the hull shape, so water in it pushes the ski down.
 - **Wake.** A dispersive wave solver in Fourier space (eWave-style, exact deep-water dispersion `ω = √(gk)`) runs in a 72 m window that follows the ski. It's driven by the hull's measured lift spread over its wetted footprint, so you get a Kelvin V wake while moving and rings when you land. The heights are read back to the CPU every frame, so the ski can ride its own wake.
 - **World.** A sandy beach with swash, wet sand, a strand line and dunes, backed by wooded hills. The bay floor deepens offshore, and there are rocky islands with pebble coves. The terrain uses the same formula in JS and GLSL, so collisions match what you see.
 - **Rendering.** Clearwater's water shading (Fresnel, absorption, refracted caustics, sun glints, lens glare) extended with a combined water/terrain ray march. Also spray particles, a modelled jetski and animated rider, and a synthesized engine sound.

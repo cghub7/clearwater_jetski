@@ -84,12 +84,12 @@
 <div id="start">
   <div id="card" class="glass">
     <h1>Clearwater Jetski</h1>
-    <p>Ride a 300&nbsp;hp personal watercraft over real-time FFT waves.</p>
+    <p>Ride a 160&nbsp;hp stand-up race jetski over real-time FFT waves.</p>
     <table>
       <tr><td><kbd>W</kbd> <kbd>S</kbd> / <kbd>↑</kbd> <kbd>↓</kbd></td><td>Throttle / brake &amp; reverse</td></tr>
       <tr><td><kbd>A</kbd> <kbd>D</kbd> / <kbd>←</kbd> <kbd>→</kbd></td><td>Steer (the jet only steers under throttle)</td></tr>
       <tr><td><kbd>Q</kbd> <kbd>E</kbd></td><td>Trim nose down / up; lean in the air</td></tr>
-      <tr><td><kbd>Shift</kbd></td><td>Stand up and lean forward: sharper turns</td></tr>
+      <tr><td><kbd>Shift</kbd></td><td>Attack stance: lean in hard for tighter turns</td></tr>
       <tr><td><kbd>C</kbd></td><td>Camera: chase / first person</td></tr>
       <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Sea state: glassy → surf (Sea button on mobile)</td></tr>
       <tr><td><kbd>R</kbd> · <kbd>M</kbd> · <kbd>H</kbd></td><td>Reset · mute · this help</td></tr>
@@ -395,52 +395,64 @@ function waterSurface(ocean, x, z, out, gHint){ // out: h, w, ux, uz, sx, sz, g
 }
 
 /* ---------------- Hull geometry (shared by physics panels and the rendered mesh) ---------------- */
-const HULL_L = 3.3;
-function hullSection(s){ // s: 0 = transom, 1 = bow. Returns right-half profile, keel -> deck centre, [x,y]
-  const yk = s < 0.55 ? 0 : 0.36*Math.pow((s-0.55)/0.45, 1.8);
-  let wc = s < 0.5 ? 0.50 + 0.08*Math.sin(Math.PI*s) : 0.58*Math.cos(Math.PI/2*Math.pow((s-0.5)/0.5, 1.3));
-  wc = Math.max(wc, 0.012);
-  const q = wc/0.58, yc = yk + (0.13 + 0.10*s)*q, wg = wc + 0.06*q + 0.008, yg = 0.52 + 0.13*s*s, yd = yg + 0.045;
-  return [[0,yk],[0.5*wc, yk+0.47*(yc-yk)],[wc,yc],[wc+0.03*q+0.004, yc+0.018],[wg-0.006,(yc+yg)*0.5],[wg,yg],[wg-0.02*q-0.003,yd],[0.55*wg,yd+0.012],[0,yd+0.015]];
+// A stand-up race ski: 2.55 m long, 0.74 m wide, deep-V hull. The rider stands in a recessed tray at the back; the
+// engine sits under a raised hood up front, with the handle pole hinged near the bow. The tray is part of the
+// hull shape, so the physics knows water in the tray pushes down on it.
+const HULL_L = 2.55, TRAY_S = 0.47;   // tray aft of s = TRAY_S, hood forward of it
+function hullSection(s){ // s: 0 = transom, 1 = bow. Returns right-half profile, keel -> centreline top, [x,y]
+  const yk = s < 0.55 ? 0 : 0.30*Math.pow((s-0.55)/0.45, 1.8);
+  let wc = s < 0.45 ? 0.33 + 0.04*Math.sin(Math.PI*s/0.9) : 0.37*Math.cos(Math.PI/2*Math.pow((s-0.45)/0.55, 1.25));
+  wc = Math.max(wc, 0.01);
+  const q = wc/0.37, yc = yk + (0.09 + 0.08*s)*q, wg = wc + 0.035*q + 0.006, yg = 0.44 + 0.08*s*s;
+  const hood = smoothstep(TRAY_S - 0.03, TRAY_S + 0.04, s);                 // 0 over the tray, 1 under the hood
+  const yFloor = 0.29 + 0.02*s;
+  const yHood = 0.60 + 0.05*Math.sin(Math.PI*clamp((s-0.45)/0.5, 0, 1)) - 0.08*smoothstep(0.85, 1, s);
+  const mix = (a, b, t) => a + (b - a)*t;
+  return [[0,yk],[0.5*wc, yk+0.47*(yc-yk)],[wc,yc],[wc+0.022*q+0.003, yc+0.015],[wg-0.004,(yc+yg)*0.5],[wg,yg],
+          [wg-0.05*q-0.004, yg + 0.012 + hood*0.03],
+          [mix(wg-0.075*q, 0.72*wg, hood), mix(yFloor + 0.03, yHood - 0.05, hood)],
+          [0, mix(yFloor, yHood, hood)]];
 }
 function hullRing(s){ const h = hullSection(s), r = h.slice(); for (let j=h.length-2;j>=1;j--) r.push([-h[j][0], h[j][1]]); return r; } // 16 points
 const hullZ = s => HULL_L/2 - HULL_L*s;
-// Builds the closed hull surface. Returns { pos:[[x,y,z]...], tris:[[a,b,c]...], ring } with outward winding.
+// Closed hull surface with outward winding. The section is not convex (the tray), so winding comes from a consistent
+// loft pattern plus the sign of the enclosed volume, not from a per-triangle "away from the axis" test.
 function buildHull(NS){
   const pos = [], tris = [], R = hullRing(0).length;
   for (let i=0;i<=NS;i++){ const s = i/NS; for (const [x,y] of hullRing(s)) pos.push([x,y,hullZ(s)]); }
-  const sub = (a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]], dot=(a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2];
-  const add = (a,b,c,ref) => { const n = cross(sub(pos[b],pos[a]), sub(pos[c],pos[a]));
-    const cen = [(pos[a][0]+pos[b][0]+pos[c][0])/3,(pos[a][1]+pos[b][1]+pos[c][1])/3,(pos[a][2]+pos[b][2]+pos[c][2])/3];
-    const o = ref(cen); if (dot(n, sub(cen,o)) < 0) tris.push([a,c,b]); else tris.push([a,b,c]); };
-  const axis = cen => { const s = clamp((HULL_L/2-cen[2])/HULL_L,0,1), h = hullSection(s); return [0, (h[0][1]+h[8][1])/2, cen[2]]; };
   for (let i=0;i<NS;i++) for (let j=0;j<R;j++){
     const a = i*R+j, b = i*R+(j+1)%R, c = (i+1)*R+j, d = (i+1)*R+(j+1)%R;
-    if (j < R/2){ add(a,c,b,axis); add(b,c,d,axis); } else { add(a,c,d,axis); add(a,d,b,axis); } // mirror-symmetric split
+    if (j < R/2){ tris.push([a,c,b],[b,c,d]); } else { tris.push([a,c,d],[a,d,b]); }   // mirror-symmetric split
   }
-  for (const [i, dz] of [[0, -1], [NS, 1]]){ // transom and bow caps
-    let cx=0, cy=0; for (let j=0;j<R;j++){ cx += pos[i*R+j][0]; cy += pos[i*R+j][1]; }
-    const ci = pos.length; pos.push([cx/R, cy/R, hullZ(i/NS) + (i? -0.03 : 0)]);
-    for (let j=0;j<R;j++) add(ci, i*R+j, i*R+(j+1)%R, cen => [cen[0], cen[1], cen[2]+dz]);
+  for (const i of [0, NS]){                                  // transom and bow caps, fanned from a low centre point
+    const ring = pos.slice(i*R, i*R+R), ci = pos.length;
+    pos.push([0, (ring[0][1] + ring[8][1])/2, hullZ(i/NS) + (i ? -0.02 : 0)]);
+    for (let j=0;j<R;j++) tris.push(i ? [ci, i*R+(j+1)%R, i*R+j] : [ci, i*R+j, i*R+(j+1)%R]);
   }
-  return { pos, tris, ring:R };
+  let vol = 0;
+  for (const [a,b,c] of tris){ const A = pos[a], B = pos[b], C = pos[c];
+    vol += (A[0]*(B[1]*C[2]-B[2]*C[1]) - A[1]*(B[0]*C[2]-B[2]*C[0]) + A[2]*(B[0]*C[1]-B[1]*C[0]))/6; }
+  const flip = vol < 0;
+  if (flip) for (const t of tris){ const x = t[1]; t[1] = t[2]; t[2] = x; }
+  return { pos, tris, ring:R, flip, volume: Math.abs(vol) };
 }
 
 /* ---------------- Jetski rigid-body physics ---------------- */
 const SKI = {
-  mass: 430,                      // 350 kg craft + fuel, 80 kg rider
-  inertia: [440, 470, 125],       // body axes: x = pitch, y = yaw, z = roll
-  com: [0, 0.50, 0.18],           // in hull coordinates (keel at transom = origin, -z forward)
+  mass: 330,                      // 250 kg stand-up race ski + fuel, 80 kg rider
+  inertia: [210, 220, 70],        // body axes: x = pitch, y = yaw, z = roll
+  com: [0, 0.44, 0.15],           // in hull coordinates (keel at transom = origin, -z forward); the standing rider raises it
   CP: 1.5,                        // pressure coefficient, face moving into water (low-aspect planing plate ~ 1.5·sinτ)
   CS: 0.12,                       // suction coefficient, face moving away (flow separates / ventilates)
   CF: 0.006,                      // skin friction
   KLIN: 650,                      // linear pressure damping (Pa per m/s), radiation-ish damping at low speed
-  thrustMax: 7000, vJet: 41,      // jet pump: static thrust (N), jet exit speed at full rpm (m/s)
-  rpmIdle: 1800, rpmMax: 8000, rpmLimit: 8500,
-  nozzle: [0, 0.20, 1.60], intake: [0, 0.02, 0.75],
-  steerMax: 0.36, trimMin: -0.10, trimMax: 0.16,
+  thrustMax: 5000, vJet: 35,      // jet pump (160 hp class): static thrust (N), jet exit speed at full rpm (m/s)
+  rpmIdle: 1600, rpmMax: 7800, rpmLimit: 8200,
+  nozzle: [0, 0.16, 1.25], intake: [0, 0.02, 0.45],
+  steerMax: 0.40, trimMin: -0.10, trimMax: 0.16,
+  riderPitchDamp: 400,            // N·m·s: the rider's knees against pitching
   // lateral foils: pump housing/keel strip and the sponsons give the stern its grip (x,y,z, area m², lift slope)
-  fins: [ [0,-0.01,1.25, 0.02, 2.5], [0.56,0.10,1.15, 0.012, 2.5], [-0.56,0.10,1.15, 0.012, 2.5], [0,0.0,-0.3, 0.03, 2.0] ],
+  fins: [ [0,-0.01,0.95, 0.016, 2.5], [0.36,0.08,0.90, 0.009, 2.5], [-0.36,0.08,0.90, 0.009, 2.5], [0,0.0,-0.25, 0.022, 2.0] ],
 };
 function makeSki(){
   const hull = buildHull(14);
@@ -460,7 +472,7 @@ function makeSki(){
   const contacts = [];
   for (let i=0;i<=6;i++){ const s = i/6, h = hullSection(s), z = hullZ(s);
     contacts.push([0,h[0][1],z],[h[2][0],h[2][1],z],[-h[2][0],h[2][1],z]); if (i%2===0) contacts.push([h[5][0],h[5][1],z],[-h[5][0],h[5][1],z]); }
-  contacts.push([0,0.95,-0.4],[0,0.93,0.6],[0,1.75,0.1]); // console, seat, rider's head
+  contacts.push([0,0.68,-0.9],[0,1.2,-0.07],[0,1.85,0.45]); // pole pivot, handlebar, rider's head
   const ct = contacts.map(p=>[p[0]-c0[0],p[1]-c0[1],p[2]-c0[2]]);
   const S = {
     NP, pc, pn, pa, po, ct,
@@ -581,19 +593,22 @@ function skiStep(S, ocean, dt, tOff){
   const roll = Math.atan2(R[3], R[4]), rollRate = w[0]*R[2] + w[1]*R[5] + w[2]*R[8];
   const onBoard = Math.abs(roll) < 1.2 && R[4] > 0.25;   // past ~70 degrees of heel the rider is in the water
   S.capsized = !onBoard;
-  const bankT = -S.steer*(0.10 + (0.42 + 0.12*S.stand)*spdF);
+  const bankT = -S.steer*(0.12 + (0.52 + 0.14*S.stand)*spdF);
   S.bankT = bankT;
-  const rollT = !onBoard ? 0 : air ? -S.steer*120 - 60*rollRate : (14000*(bankT - roll) - 1900*rollRate);
-  const pitchT = !onBoard ? 0 : S.pitchIn*(air? 420 : 260) - (air? 0 : S.stand*180*spdF);
-  const RT = bx(pitchT, 0, rollT); Tx += RT[0]; Ty += RT[1]; Tz += RT[2];
+  const rollT = !onBoard ? 0 : air ? -S.steer*60 - 30*rollRate : (7000*(bankT - roll) - 900*rollRate);
+  const pitchT = !onBoard ? 0 : S.pitchIn*(air? 200 : 130) - (air? 0 : S.stand*90*spdF);
+  // a standing rider soaks up pitching with knees and weight (damps porpoising); nothing to push against in the air
+  const pitchRate = w[0]*R[0] + w[1]*R[3] + w[2]*R[6];
+  const pitchDamp = (onBoard && !air) ? -SKI.riderPitchDamp*pitchRate : 0;
+  const RT = bx(pitchT + pitchDamp, 0, rollT); Tx += RT[0]; Ty += RT[1]; Tz += RT[2];
   // carving: the banked V-bottom and the rider's weight on the inside chine bite into the water (yaw torque),
   // scaled by how much hull is actually in the water
   if (!air){ const bite = clamp(wetA/0.35, 0, 1), yawRate = w[0]*R[1] + w[1]*R[4] + w[2]*R[7];
     // lateral resistance of the whole hull against spinning (grows with the square of the yaw rate)
-    const yd = bx(0, -210*bite*yawRate*Math.abs(yawRate), 0); Tx += yd[0]; Ty += yd[1]; Tz += yd[2];
+    const yd = bx(0, -100*bite*yawRate*Math.abs(yawRate), 0); Tx += yd[0]; Ty += yd[1]; Tz += yd[2];
     if (onBoard){
-    const want = -S.steer*(1.5 - 0.75*spdF + 0.25*S.stand)*clamp(S.fwdSpeed/3, 0, 1);   // rad/s the rider asks for
-    const k = 700 + 2300*Math.abs(S.steer), lim = 700 + 1900*Math.abs(S.steer) + 900*S.stand;
+    const want = -S.steer*(1.7 - 0.8*spdF + 0.3*S.stand)*clamp(S.fwdSpeed/3, 0, 1);   // rad/s the rider asks for
+    const k = 330 + 1100*Math.abs(S.steer), lim = 330 + 900*Math.abs(S.steer) + 420*S.stand;
     const yt = bx(0, bite*clamp((want - yawRate)*k, -lim, lim)*clamp(S.fwdSpeed/6, 0, 1), 0);
     Tx += yt[0]; Ty += yt[1]; Tz += yt[2]; } }
   // ---- terrain contacts (beaching, rocks) ----
@@ -615,7 +630,7 @@ function skiStep(S, ocean, dt, tOff){
   // beached: the rider walks the ski (push forward with throttle, back into the water with brake)
   if (S.grounded > 0 && S.wet < 0.4 && vv < 2.0 && onBoard){
     const pushDir = S.thr - S.brake, uphill = gC > 1.4 && pushDir > 0;
-    const push = uphill ? 0 : pushDir*3600, fl = Math.hypot(fwd[0], fwd[2]) || 1;
+    const push = uphill ? 0 : pushDir*3000, fl = Math.hypot(fwd[0], fwd[2]) || 1;
     Fx += fwd[0]/fl*push; Fz += fwd[2]/fl*push;
     const yawT = bx(0, -S.steer*220*Math.min(1, Math.abs(S.thr - S.brake) + 0.3), 0); Tx += yawT[0]; Ty += yawT[1]; Tz += yawT[2];
   }
@@ -1629,70 +1644,55 @@ function mbCapsule(m, A, B, ra, rb, col, seg=12, rings=4){
 }
 const lin = (r,g,b,gl_=0.3) => [Math.pow(r,2.2), Math.pow(g,2.2), Math.pow(b,2.2), gl_];
 const COL = {
-  hull: lin(0.93,0.93,0.92,0.75), transom: lin(0.82,0.83,0.83,0.6), deck: lin(0.33,0.34,0.35,0.12), mat: lin(0.24,0.25,0.26,0.1), rub: lin(0.07,0.07,0.08,0.4), accent: lin(0.98,0.80,0.10,0.9),
-  hood: lin(0.98,0.80,0.10,0.92), seat: lin(0.08,0.08,0.09,0.35), dark: lin(0.12,0.12,0.13,0.5), metal: lin(0.55,0.56,0.58,0.8),
-  skin: lin(0.78,0.58,0.45,0.25), vest: lin(0.85,0.22,0.08,0.3), vest2: lin(0.12,0.12,0.14,0.3), shorts: lin(0.10,0.18,0.35,0.2), hair: lin(0.12,0.08,0.05,0.3), shades: lin(0.02,0.02,0.02,0.95),
+  black: lin(0.07,0.07,0.075,0.88), bottom: lin(0.10,0.10,0.11,0.6), green: lin(0.50,0.88,0.06,0.9), rail: lin(0.20,0.20,0.21,0.45),
+  trayWall: lin(0.09,0.09,0.10,0.3), mat: lin(0.26,0.27,0.28,0.08), metal: lin(0.60,0.61,0.63,0.85), dark: lin(0.12,0.12,0.13,0.5),
+  white: lin(0.92,0.92,0.92,0.6), rubber: lin(0.05,0.05,0.05,0.2),
+  skin: lin(0.80,0.60,0.46,0.25), vest: lin(0.93,0.93,0.93,0.35), vestDark: lin(0.08,0.08,0.09,0.35), pants: lin(0.06,0.06,0.07,0.35),
+  helmet: lin(0.55,0.90,0.10,0.9), helmetWhite: lin(0.95,0.95,0.95,0.9), visor: lin(0.05,0.05,0.05,0.9), lens: lin(0.55,0.35,0.08,0.95),
+  glove: lin(0.50,0.88,0.10,0.35),
 };
+// hull as colour strips (crisp creases at chines, rail and tray edge); the livery changes colour exactly at stations
+function hullStripColor(k, s){
+  const hood = s > TRAY_S + 0.005;
+  if (k <= 1) return COL.bottom;
+  if (k <= 3) return COL.black;
+  if (k === 4) return ((s > 0.08 && s < 0.36) || (s > 0.58 && s < 0.82)) ? COL.green : COL.black;
+  if (k === 5) return COL.rail;
+  if (k === 6) return hood ? ((s > 0.55 && s < 0.92) ? COL.green : COL.black) : COL.trayWall;
+  return hood ? COL.black : COL.mat;
+}
 function buildSkiMesh(){
   const m = MeshB();
-  // hull: shared shape with the physics (finer)
-  // one strip per panel of the cross-section: chines, rub rail and deck edge stay crisp, colours don't bleed
-  const NS = 44, rings = [];
-  for (let i=0;i<=NS;i++){ const s = i/NS; rings.push(hullRing(s).map(([x,y]) => [x, y, hullZ(s)])); }
-  const R = rings[0].length;
-  const stripCol = j => { const k = j <= 7 ? j : 15 - j; return k <= 3 ? COL.hull : k === 4 ? COL.accent : k === 5 ? COL.rub : COL.deck; };
-  const axis = cen => { const s = clamp((HULL_L/2-cen[2])/HULL_L,0,1), h = hullSection(s); return [0, (h[0][1]+h[8][1])/2, cen[2]]; };
+  const breaks = [0.08, 0.36, 0.55, 0.58, 0.82, 0.92, TRAY_S + 0.005];
+  const st = [...new Set([...Array.from({length:49}, (_, i) => i/48), ...breaks].map(x => +x.toFixed(5)))].sort((a,b) => a-b);
+  const rings = st.map(s => hullRing(s).map(([x,y]) => [x, y, hullZ(s)]));
+  const R = rings[0].length, flip = buildHull(6).flip;
+  const tri = (a,b,c) => flip ? m.i.push(a,c,b) : m.i.push(a,b,c);
   for (let j=0;j<R;j++){
-    const st = m.i.length, base = m.p.length/3;
-    for (let i=0;i<=NS;i++){ mbVert(m, rings[i][j], stripCol(j)); mbVert(m, rings[i][(j+1)%R], stripCol(j)); }
-    for (let i=0;i<NS;i++){ const a = base+i*2; m.i.push(a, a+2, a+1, a+1, a+2, a+3); }
-    orient(m, st, axis);
+    const k = j <= 7 ? j : 15 - j;
+    let prev = null, va, vb;
+    for (let i=0;i<st.length-1;i++){
+      const col = hullStripColor(k, (st[i]+st[i+1])/2);
+      if (col !== prev){ va = mbVert(m, rings[i][j], col); vb = mbVert(m, rings[i][(j+1)%R], col); prev = col; }
+      const vc = mbVert(m, rings[i+1][j], col), vd = mbVert(m, rings[i+1][(j+1)%R], col);
+      tri(va, vc, vb); tri(vb, vc, vd);
+      va = vc; vb = vd;
+    }
   }
-  for (const [ri, dz] of [[0, -1], [NS, 1]]){           // transom and bow caps, flat
-    const st = m.i.length, ring = rings[ri], cy = ring.reduce((a,p)=>a+p[1], 0)/R;
-    const ci = mbVert(m, [0, cy, ring[0][2]], COL.transom), vs = ring.map(p => mbVert(m, p, COL.transom));
-    for (let j=0;j<R;j++) m.i.push(ci, vs[j], vs[(j+1)%R]);
-    orient(m, st, cen => [cen[0], cen[1], cen[2] + dz]);
+  for (const [ri, bow] of [[0, false], [st.length-1, true]]){       // transom and bow caps
+    const ring = rings[ri], ci = mbVert(m, [0, (ring[0][1]+ring[8][1])/2, ring[0][2]], COL.black), vs = ring.map(p => mbVert(m, p, COL.black));
+    for (let j=0;j<R;j++) bow ? tri(ci, vs[(j+1)%R], vs[j]) : tri(ci, vs[j], vs[(j+1)%R]);
   }
-  // swim platform over the transom
-  mbBox(m, [0, 0.565, 1.53], [0.50, 0.028, 0.25], COL.mat);
-  // hood / front cowl over the bow
-  const hood = [];
-  for (let k=0;k<=18;k++){
-    const u = k/18, z = -0.22 - 1.30*u, s = (HULL_L/2 - z)/HULL_L, h = hullSection(s);
-    const yd = h[8][1] + 0.004, b = h[6][0]*0.98, yt = yd + (1.02 - yd)*(1 - Math.pow(u, 1.7)) * (u < 0.04 ? 0.94 + 1.5*u : 1);
-    const ring = [];
-    for (let q=0;q<=14;q++){ const ph = Math.PI*q/14, c = Math.cos(ph), sn = Math.sin(ph);
-      ring.push([b*Math.sign(c)*Math.pow(Math.abs(c), 0.7), yd + (yt-yd)*Math.pow(sn, 0.55), z]); }
-    hood.push(ring);
-  }
-  let st = m.i.length;
-  mbLoft(m, hood, (i,j) => j<0 ? COL.dark : ((j===0||j===14) ? COL.rub : COL.hood), false, true, false);
-  orient(m, st, cen => [0, 0.45, cen[2] + (cen[2] > -0.24 ? 0.5 : 0)]);
-  // seat
-  const seat = [];
-  for (let k=0;k<=16;k++){
-    const u = k/16, z = -0.26 + 1.32*u, s = (HULL_L/2 - z)/HULL_L, h = hullSection(s);
-    const end = Math.pow(1 - Math.pow(Math.abs(2*u-1), 6), 0.35);
-    const w = Math.max(0.215*end, 0.02), yb = h[8][1] - 0.01, yt = yb + Math.max((0.94 - 0.04*u - yb)*Math.pow(end,0.5), 0.01);
-    const ring = [];
-    for (let q=0;q<20;q++){ const th = 2*Math.PI*q/20, c = Math.cos(th), sn = Math.sin(th);
-      ring.push([w*Math.sign(c)*Math.pow(Math.abs(c), 0.35), (yt+yb)/2 + (yt-yb)/2*Math.sign(sn)*Math.pow(Math.abs(sn), 0.35), z]); }
-    seat.push(ring);
-  }
-  st = m.i.length;
-  mbLoft(m, seat, (i,j,p) => (p[1] < 0.66 ? COL.dark : COL.seat), true, true, true);
-  orient(m, st, cen => [0, 0.76, clamp(cen[2], -0.2, 1.0)]);
-  // jet nozzle, reboarding step, sponsons
-  mbCapsule(m, [0,0.20,1.50], [0,0.20,1.80], 0.085, 0.075, COL.dark);
-  mbCapsule(m, [-0.22,0.47,1.72], [0.22,0.47,1.72], 0.025, 0.025, COL.metal, 8, 2);
-  for (const sx of [-1,1]) mbCapsule(m, [0.57*sx,0.16,0.7], [0.56*sx,0.13,1.45], 0.035, 0.03, COL.rub, 8, 2);
-  // console + mirrors
-  mbCapsule(m, [0,0.95,-0.30], [0,1.03,-0.46], 0.07, 0.06, COL.dark);
-  for (const sx of [-1,1]) mbCapsule(m, [0.30*sx,1.03,-0.62], [0.36*sx,1.10,-0.60], 0.035, 0.05, COL.dark, 8, 2);
+  // tray pad, ride plate, pump nozzle, sponsons, hood intake, bow eye
+  mbBox(m, [0, hullSection(0.2)[8][1] + 0.012, 0.66], [0.25, 0.012, 0.46], COL.mat);
+  mbBox(m, [0, 0.008, 1.05], [0.13, 0.008, 0.22], COL.metal);
+  mbCapsule(m, [0,0.15,1.16], [0,0.15,1.40], 0.075, 0.065, COL.dark);
+  for (const sx of [-1,1]) mbCapsule(m, [0.355*sx,0.10,0.72], [0.35*sx,0.07,1.22], 0.022, 0.018, COL.rail, 8, 2);
+  const hz = hullZ(0.64), hy = hullSection(0.64)[8][1];
+  mbCapsule(m, [0, hy+0.005, hz+0.10], [0, hy+0.01, hz-0.12], 0.05, 0.035, COL.dark, 10, 2);
+  mbCapsule(m, [0, hullSection(0.985)[8][1]+0.02, hullZ(0.985)], [0, hullSection(0.985)[8][1]+0.05, hullZ(0.985)-0.02], 0.018, 0.018, COL.metal, 8, 2);
   return mbFinish(m);
 }
-
 function mbBox(m, c, hs, col){ // axis-aligned box with flat faces
   const P = (x,y,z) => [c[0]+x*hs[0], c[1]+y*hs[1], c[2]+z*hs[2]];
   const F = [ [[1,-1,-1],[1,1,-1],[1,1,1],[1,-1,1]], [[-1,-1,-1],[-1,-1,1],[-1,1,1],[-1,1,-1]], [[-1,1,-1],[-1,1,1],[1,1,1],[1,1,-1]],
@@ -1709,58 +1709,72 @@ function ik2(A, T, l1, l2, pole){
   let p = [pole[0], pole[1], pole[2]]; const pd = p[0]*d[0]+p[1]*d[1]+p[2]*d[2]; p = p.map((x,i)=>x-d[i]*pd); const pl = Math.hypot(...p)||1; p = p.map(x=>x/pl);
   return [A[0]+d[0]*a+p[0]*h, A[1]+d[1]*a+p[1]*h, A[2]+d[2]*a+p[2]*h];
 }
-// rider + handlebar, in hull coordinates. pose: steer (-1..1), lean (rad, + = right), stand (0..1), crouch (0..1), fwd (0..1)
+// Hinged handle pole + a standing rider in race gear, in hull coordinates.
+// pose: steer (-1..1), lean (rad, + = right, relative to the ski), attack (0..1, Shift), crouch (0..1, landings)
+const POLE_PIVOT = (() => { const s = 0.84, h = hullSection(s); return [0, h[8][1] + 0.03, hullZ(s)]; })();
 function buildRider(pose, hideHead){
   const m = MeshB();
-  const add = (a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], sc = (a,k)=>a.map(x=>x*k);
-  // handlebar rotates about the tilted steering column
-  const piv = [0, 1.00, -0.42], ang = -pose.steer*0.42, ca = Math.cos(ang), sa = Math.sin(ang);
-  const rotY = p => { const q = [p[0]-piv[0], p[1]-piv[1], p[2]-piv[2]]; return [piv[0] + q[0]*ca + q[2]*sa, p[1], piv[2] - q[0]*sa + q[2]*ca]; };
-  const gL = rotY([-0.36, 1.07, -0.38]), gR = rotY([0.36, 1.07, -0.38]);
-  mbCapsule(m, rotY([-0.28,1.07,-0.40]), rotY([0.28,1.07,-0.40]), 0.017, 0.017, COL.metal, 8, 2);
-  mbCapsule(m, rotY([-0.40,1.07,-0.38]), rotY([-0.28,1.07,-0.40]), 0.024, 0.024, COL.seat, 8, 2);
-  mbCapsule(m, rotY([0.28,1.07,-0.40]), rotY([0.40,1.07,-0.38]), 0.024, 0.024, COL.seat, 8, 2);
-  mbCapsule(m, [0,0.98,-0.44], rotY([0,1.07,-0.42]), 0.03, 0.03, COL.dark, 8, 2);
-  // body
-  const st = pose.stand, cr = pose.crouch, lean = pose.lean;
-  const cl = Math.cos(lean), sl = Math.sin(lean);
-  const rollAbout = (p, o) => { const q = [p[0]-o[0], p[1]-o[1]]; return [o[0] + q[0]*cl + q[1]*sl, o[1] - q[0]*sl + q[1]*cl, p[2]]; };
-  const hip = [0, 1.03 + 0.30*st - 0.05*cr, 0.30 - 0.12*st];
-  const seatPt = [0, 0.93, hip[2]];
-  let chest = add(hip, [0, 0.44 - 0.10*cr - 0.04*pose.fwd, -0.15 - 0.10*pose.fwd - 0.08*st - 0.05*cr]);
-  chest = rollAbout(chest, seatPt);
-  const hipR = rollAbout(hip, seatPt);
-  const up = [chest[0]-hipR[0], chest[1]-hipR[1], chest[2]-hipR[2]]; const ul = Math.hypot(...up); const un = sc(up, 1/ul);
-  const side = [cl, -sl, 0];
-  const head = add(chest, add(sc(un, 0.25), [0,0.02,-0.03]));
-  const shL = add(chest, add(sc(side,-0.19), sc(un,-0.03))), shR = add(chest, add(sc(side,0.19), sc(un,-0.03)));
-  // legs
-  for (const sx of [-1,1]){
-    const hp = add(hipR, sc(side, 0.10*sx));
-    const foot = [0.31*sx, 0.63, 0.12 - 0.05*st];
-    const knee = ik2(hp, foot, 0.44, 0.45, [0.25*sx, 0.5, -0.9]);
-    mbCapsule(m, hp, knee, 0.085, 0.065, COL.shorts, 10, 3);
-    mbCapsule(m, knee, foot, 0.058, 0.045, COL.skin, 10, 3);
-    mbCapsule(m, add(foot,[0,-0.03,0.04]), add(foot,[0.01*sx,-0.04,-0.18]), 0.045, 0.04, COL.dark, 8, 2);
+  const add = (a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], sc = (a,k)=>a.map(x=>x*k), sub = (a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]];
+  const nrm = v => { const l = Math.hypot(...v)||1; return v.map(x=>x/l); }, crs = (a,b)=>[a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+  const cr = pose.crouch, at = pose.attack;
+  // ---- pole: hinged at the bow, rises toward the rider; the bar steers about the pole's "up" ----
+  const th = 0.52 - 0.12*cr - 0.06*at, pdir = [0, Math.sin(th), Math.cos(th)], pup = [0, Math.cos(th), -Math.sin(th)];
+  const barC = add(POLE_PIVOT, sc(pdir, 1.0));
+  const ang = -pose.steer*0.35, ca = Math.cos(ang), sa = Math.sin(ang);
+  const rot = v => { const k = pup, d = k[0]*v[0]+k[1]*v[1]+k[2]*v[2], c = crs(k, v);        // Rodrigues about pup
+    return [v[0]*ca + c[0]*sa + k[0]*d*(1-ca), v[1]*ca + c[1]*sa + k[1]*d*(1-ca), v[2]*ca + c[2]*sa + k[2]*d*(1-ca)]; };
+  const barX = rot([1,0,0]), gL = add(barC, sc(barX, -0.31)), gR = add(barC, sc(barX, 0.31));
+  mbCapsule(m, POLE_PIVOT, add(POLE_PIVOT, sc(pdir, 0.96)), 0.045, 0.04, COL.black, 10, 2);
+  mbCapsule(m, add(POLE_PIVOT, sc(pdir, 0.25)), add(POLE_PIVOT, sc(pdir, 0.62)), 0.047, 0.047, COL.green, 10, 2);
+  mbCapsule(m, add(POLE_PIVOT, [-0.07, -0.01, 0]), add(POLE_PIVOT, [0.07, -0.01, 0]), 0.035, 0.035, COL.metal, 8, 2);
+  mbCapsule(m, add(barC, sc(barX, -0.26)), add(barC, sc(barX, 0.26)), 0.016, 0.016, COL.metal, 8, 2);
+  mbCapsule(m, add(add(barC, sc(barX, -0.12)), sc(pup, 0.03)), add(add(barC, sc(barX, 0.12)), sc(pup, 0.03)), 0.03, 0.03, COL.rubber, 8, 2);
+  for (const g of [gL, gR]) mbCapsule(m, add(g, sc(barX, -0.06)), add(g, sc(barX, 0.06)), 0.022, 0.022, COL.rubber, 8, 2);
+  // ---- rider: staggered stance in the tray, knees bent, torso over the bar, leaning into turns about the feet ----
+  const fy = hullSection(0.3)[8][1] + 0.024;
+  const lean = pose.lean, cl = Math.cos(lean), sl = Math.sin(lean);
+  const rollAbout = p => { const x = p[0], y = p[1] - fy; return [x*cl + y*sl, fy - x*sl + y*cl, p[2]]; };
+  const footL = [-0.11, fy + 0.05, 0.30], footR = [0.13, fy + 0.05, 0.80];
+  const hip0 = [0.01 + 0.10*lean, 0.90 - 0.15*cr - 0.08*at, 0.60 + 0.04*at];
+  const chest0 = add(hip0, [0, 0.28 - 0.05*at, -0.36 - 0.08*at]);
+  const hip = rollAbout(hip0), chest = rollAbout(chest0);
+  const side = [cl, -sl, 0], up = nrm(sub(chest, hip)), fwdB = nrm(crs(up, side));        // torso frame (fwdB: chest front)
+  const hUp = [sl, cl, 0], hF = [0, 0, -1];                                                 // the head looks ahead, rolled with the lean
+  const head = add(chest, add(sc(up, 0.17), add(sc(hUp, 0.07), sc(hF, 0.03))));
+  const shL = add(chest, add(sc(side,-0.20), sc(up,-0.03))), shR = add(chest, add(sc(side,0.20), sc(up,-0.03)));
+  // legs: pants and boots
+  for (const [sx, foot, toeDir] of [[-1, footL, [-0.25,0,-1]], [1, footR, [0.45,0,-0.9]]]){
+    const hp = add(hip, sc(side, 0.10*sx)), ankle = add(foot, [0, 0.05, 0]);
+    const knee = ik2(hp, ankle, 0.46, 0.47, [0.35*sx, 0.25, -1]);
+    mbCapsule(m, hp, knee, 0.088, 0.07, COL.pants, 10, 3);
+    mbCapsule(m, knee, ankle, 0.066, 0.05, COL.pants, 10, 3);
+    const td = nrm(toeDir);
+    mbCapsule(m, add(foot, sc(td, -0.06)), add(foot, sc(td, 0.18)), 0.052, 0.045, COL.rubber, 8, 2);
   }
-  // torso + vest
-  mbCapsule(m, hipR, add(chest, sc(un,-0.02)), 0.15, 0.17, COL.vest, 14, 4);
-  mbCapsule(m, add(hipR, sc(un, 0.12)), add(hipR, sc(un, 0.16)), 0.158, 0.158, COL.vest2, 14, 2);
-  mbCapsule(m, add(shL, sc(side,0.04)), add(shR, sc(side,-0.04)), 0.08, 0.08, COL.vest, 10, 3);
-  // arms
+  // torso: race vest, white with dark panels
+  mbCapsule(m, hip, add(chest, sc(up,-0.02)), 0.15, 0.175, COL.vest, 14, 4);
+  mbCapsule(m, add(hip, sc(up, 0.02)), add(hip, sc(up, 0.10)), 0.158, 0.16, COL.vestDark, 14, 2);
+  mbCapsule(m, add(chest, add(sc(side,-0.10), sc(fwdB, 0.10))), add(chest, add(sc(side,0.10), sc(fwdB, 0.10))), 0.07, 0.07, COL.vestDark, 10, 2);
+  mbCapsule(m, add(shL, sc(side,0.04)), add(shR, sc(side,-0.04)), 0.085, 0.085, COL.vest, 10, 3);
+  // arms: bare, gloved hands on the grips
   for (const [sh, g, sx] of [[shL, gL, -1], [shR, gR, 1]]){
-    const elbow = ik2(sh, g, 0.30, 0.31, [0.9*sx, -0.6, 0.6]);
-    mbCapsule(m, sh, elbow, 0.066, 0.054, COL.skin, 10, 3);
-    mbCapsule(m, elbow, g, 0.052, 0.042, COL.skin, 10, 3);
-    mbCapsule(m, g, add(g, [0.02*sx, 0.0, -0.03]), 0.045, 0.045, COL.skin, 8, 2);
+    const elbow = ik2(sh, g, 0.31, 0.31, add(sc(side, 0.9*sx), [0, -0.5, 0.4]));
+    mbCapsule(m, sh, elbow, 0.064, 0.052, COL.skin, 10, 3);
+    mbCapsule(m, elbow, g, 0.05, 0.042, COL.skin, 10, 3);
+    mbCapsule(m, add(g, sc(barX, -0.05)), add(g, sc(barX, 0.05)), 0.05, 0.048, COL.glove, 8, 2);
   }
   if (!hideHead){
-    mbCapsule(m, add(chest, sc(un, 0.09)), add(chest, sc(un, 0.17)), 0.055, 0.05, COL.skin, 10, 2);
-    mbCapsule(m, add(head,[0,-0.02,0.01]), add(head,[0,0.03,-0.01]), 0.105, 0.1, COL.skin, 14, 5);
-    mbCapsule(m, add(head,[0,0.05,0.03]), add(head,[0,0.07,-0.01]), 0.1, 0.092, COL.hair, 14, 4);
-    mbCapsule(m, add(head,[-0.07,0.015,-0.085]), add(head,[0.07,0.015,-0.085]), 0.026, 0.026, COL.shades, 10, 2);
+    mbCapsule(m, add(chest, sc(up, 0.08)), add(chest, sc(up, 0.16)), 0.055, 0.05, COL.skin, 10, 2);
+    const H = (x,y,z) => add(head, add(sc(side,x), add(sc(hUp,y), sc(hF,z))));               // helmet frame (z = forward)
+    mbCapsule(m, H(0,-0.01,0.0), H(0,0.03,-0.02), 0.145, 0.14, COL.helmet, 16, 6);           // shell
+    mbCapsule(m, H(0,0.06,-0.06), H(0,0.07,-0.10), 0.125, 0.11, COL.helmetWhite, 14, 5);    // white crown panel
+    mbCapsule(m, H(-0.075,-0.09,0.10), H(0.075,-0.09,0.10), 0.05, 0.05, COL.helmet, 10, 3);  // chin bar
+    mbCapsule(m, H(0,-0.08,0.13), H(0,-0.1,0.18), 0.04, 0.03, COL.visor, 8, 2);            // mouthpiece vent
+    for (const x of [-0.075, 0, 0.075]) mbCapsule(m, H(x,0.10,0.09), H(x*1.1,0.13,0.24), 0.02, 0.018, COL.visor, 8, 2);   // peak
+    mbCapsule(m, H(-0.085,0.02,0.125), H(0.085,0.02,0.125), 0.036, 0.036, COL.lens, 10, 2); // goggles
+    mbCapsule(m, H(-0.14,0.02,0.02), H(0.14,0.02,0.02), 0.03, 0.03, COL.visor, 8, 2);       // strap
   }
-  return { geo: mbFinish(m), head, chest, un };
+  return { geo: mbFinish(m), head, chest, un: up };
 }
 function makeGeoBuffer(dynamic){
   const vao = gl.createVertexArray(), vb = gl.createBuffer(), ib = gl.createBuffer();
@@ -2262,7 +2276,7 @@ function initAudio(){
 }
 function updateAudio(){
   const a = audio; if (!a.ctx) return;
-  const t = a.ctx.currentTime, rpm = ski.rpm, f0 = rpm/60*1.5;
+  const t = a.ctx.currentTime, rpm = ski.rpm, f0 = rpm/60*2;   // 4-cylinder four-stroke
   const s = (p, v, tc=0.04) => p.setTargetAtTime(v, t, tc);
   s(a.o1.frequency, f0); s(a.o2.frequency, f0*2.003); s(a.o3.frequency, f0*0.5);
   const load = Math.max(ski.thr, ski.brake);
@@ -2467,7 +2481,8 @@ function frame(now){
 
   // rider
   const spdF = clamp(ski.fwdSpeed/14, 0, 1);
-  const pose = { steer: ski.steer, lean: ski.steer*(0.12 + 0.28*spdF) + (ski.stand*0.1*ski.steer), stand: ski.stand, crouch, fwd: clamp(ski.thr*spdF, 0, 1)*0.7 };
+  // the rider throws their body into the turn (on top of the ski's own bank), crouches into landings and when attacking
+  const pose = { steer: ski.steer, lean: ski.capsized ? 0 : ski.steer*(0.14 + 0.36*spdF)*(1 + 0.35*ski.stand), attack: ski.stand, crouch: Math.min(1, crouch) };
   const rider = buildRider(pose, camMode === 1);
   riderBuf.set(rider.geo);
   const tc3 = performance.now();
@@ -2500,7 +2515,7 @@ function frame(now){
   gl.uniform1f(u.uRipSize, RSIZE); gl.uniform2fv(u.uRipCenter, ripCenter); gl.uniform2fv(u.uCausShift, causShift);
   gl.uniform1f(u.uL0, OCASC[0].L); gl.uniform1f(u.uL1, OCASC[1].L); gl.uniform1f(u.uHm, ocean.hmax + 0.5 + ocean.surf*1.6);   // bound on |water height|: cascades + wake + surf crests gl.uniform1f(u.uWhite, ocean.white);
   gl.uniform1f(u.uNear, NEAR); gl.uniform1f(u.uFar, FAR);
-  const E0 = ellipsoid([0,0.42,0.1],[0.62,0.36,1.7]), E1 = ellipsoid([0,1.3,0.15],[0.3,0.5,0.32]);
+  const E0 = ellipsoid([0,0.34,0.0],[0.40,0.30,1.30]), E1 = ellipsoid([0,1.12,0.45],[0.26,0.56,0.34]);
   gl.uniformMatrix3fv(u.uEllM, false, new Float32Array([...E0[0], ...E1[0]])); gl.uniform3fv(u.uEllC, new Float32Array([...E0[1], ...E1[1]]));
   fullscreen();
   if (Q.has('bench') && frames === 25) runBench(B, t);
