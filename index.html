@@ -54,7 +54,8 @@
   #go { margin-top:16px; text-align:center; font-weight:600; padding:10px; border-radius:999px; background:rgba(255,255,255,.16); }
   #card .cr { margin-top:12px; font-size:11px; opacity:.55; text-align:center; }
   #card .cr a { color:inherit; }
-  #mbtns { position:fixed; top:calc(14px + env(safe-area-inset-top,0px)); right:calc(14px + env(safe-area-inset-right,0px)); z-index:7; display:none; gap:8px; }
+  #mbtns { position:fixed; top:calc(14px + env(safe-area-inset-top,0px)); right:calc(14px + env(safe-area-inset-right,0px)); z-index:7; display:flex; gap:8px; }
+  #mbtns .tonly { display:none; } body.touch #mbtns .tonly { display:block; }
   #mbtns button { font:600 14px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; color:var(--ink); border:0; padding:11px 15px;
     border-radius:999px; -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
   #mbtns button:active { background:rgba(255,255,255,.22); }
@@ -79,7 +80,7 @@
 <div id="mode" class="glass"></div>
 <div id="air"></div>
 <div id="msg" class="glass"></div>
-<div id="mbtns"><button id="bSea" class="glass">Sea: Light chop</button><button id="bCam" class="glass">Camera</button></div>
+<div id="mbtns"><button id="bSea" class="glass tonly">Sea: Light chop</button><button id="bCam" class="glass tonly">Camera</button><button id="bGfx" class="glass">Graphics: High</button></div>
 <div id="touch"><div class="pad l"></div><div class="pad r"></div></div>
 <div id="start">
   <div id="card" class="glass">
@@ -91,6 +92,7 @@
       <tr><td><kbd>Q</kbd> <kbd>E</kbd></td><td>Trim nose down / up; lean in the air</td></tr>
       <tr><td><kbd>Shift</kbd></td><td>Attack stance: lean in hard for tighter turns</td></tr>
       <tr><td><kbd>C</kbd></td><td>Camera: chase / first person</td></tr>
+      <tr><td><kbd>G</kbd></td><td>Graphics: low / medium / high / ultra</td></tr>
       <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Sea state: glassy → surf (Sea button on mobile)</td></tr>
       <tr><td><kbd>R</kbd> · <kbd>M</kbd> · <kbd>H</kbd></td><td>Reset · mute · this help</td></tr>
       <tr><td>Mouse drag / wheel</td><td>Look around / zoom</td></tr>
@@ -840,15 +842,22 @@ function runFFT(t){
 // transverse and diverging waves), inverse FFT. The hull pressure is the ski's measured hydrodynamic lift spread
 // over its wetted footprint, so displacement, planing and landings all make the right waves.
 // The window follows the ski; its borders absorb. A foam layer rides along.
-// 256² over 72 m (0.28 m cells) by default; ?wake=512 doubles the resolution for fast GPUs.
-const WN = Q.has('wake') ? +Q.get('wake') : 256;
-const RSIZE = WN >= 512 ? 96.0 : 72.0, WDX = RSIZE/WN;
+// 256² over 72 m (0.28 m cells), or 512² over 96 m on the Ultra preset (?wake=512 forces it).
 const WFMT = extF32 ? gl.RG32F : gl.RG16F;                                   // h and phi only: half the bandwidth of RGBA
-const wP = [0,1].map(()=>rt(WN,WN,WFMT,{filter:gl.NEAREST}));
-const wFoam = [0,1].map(()=>rt(WN,WN,gl.R16F,{filter:gl.NEAREST}));
-const ripN = rt(WN,WN,gl.RGBA16F,{wrap:gl.CLAMP_TO_EDGE});       // (h, dh/dx, dh/dz, foam) for rendering
-for (const r of [...wP, ...wFoam, ripN]){ gl.bindFramebuffer(gl.FRAMEBUFFER, r.fb); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT); }
+let WN = 0, RSIZE = 72.0, WDX = 1, wP = [], wFoam = [], ripN = null;
 let wCur = 0, wFoamCur = 0, ripCenter = [0,0];
+function allocWake(n){
+  if (n === WN) return;
+  for (const r of [...wP, ...wFoam, ...(ripN ? [ripN] : [])]){ gl.deleteTexture(r.t); gl.deleteFramebuffer(r.fb); }
+  WN = n; RSIZE = WN >= 512 ? 96.0 : 72.0; WDX = RSIZE/WN;
+  wP = [0,1].map(()=>rt(WN,WN,WFMT,{filter:gl.NEAREST}));
+  wFoam = [0,1].map(()=>rt(WN,WN,gl.R16F,{filter:gl.NEAREST}));
+  ripN = rt(WN,WN,gl.RGBA16F,{wrap:gl.CLAMP_TO_EDGE});         // (h, dh/dx, dh/dz, foam) for rendering
+  for (const r of [...wP, ...wFoam, ripN]){ gl.bindFramebuffer(gl.FRAMEBUFFER, r.fb); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT); }
+  wCur = 0; wFoamCur = 0; ripCenter = [1e9, 1e9];                // far away: the next step recentres on the ski
+  if (typeof rbSync !== 'undefined' && rbSync){ gl.deleteSync(rbSync); rbSync = null; }
+  WAKE.grid = null;
+}
 
 const WAKE_FOOT = `
 uniform vec4 uFoot; uniform vec3 uFootS;          // centre uv, forward; half length / half width (uv), pressure impulse
@@ -969,6 +978,7 @@ function stepWake(dt, skiX, skiZ, fwd, foot, edgeFoam, jet){
 const RB = 56, rbBuf = gl.createBuffer(), rbData = [new Float32Array(RB*RB*4), new Float32Array(RB*RB*4)];
 gl.bindBuffer(gl.PIXEL_PACK_BUFFER, rbBuf); gl.bufferData(gl.PIXEL_PACK_BUFFER, RB*RB*16, gl.STREAM_READ); gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
 let rbSync = null, rbMeta = null, rbFlip = 0, rbOK = !!extF32 && !Q.has('noreadback');
+allocWake(Q.has('wake') ? +Q.get('wake') : 256);
 function wakeReadback(skiX, skiZ, foot, fwd){
   if (!rbOK) return;
   if (rbSync){
@@ -2138,15 +2148,17 @@ function alloc(){
   b1 = rt(qw,qh,gl.RGBA16F);
   b2 = rt(Math.max(1,qw>>2),Math.max(1,qh>>2),gl.RGBA16F,{}); b2t = rt(b2.w,b2.h,gl.RGBA16F);
 }
-window.addEventListener('resize', alloc);
+// resizes are applied by the frame loop (see pendingAlloc), so the new canvas is drawn before it is shown
 
 function post(t){
   gl.disable(gl.BLEND);
   gl.useProgram(pBright.p); bindT(0,hdrRT.t); gl.uniform1i(pBright.u.uSrc,0);
   target(qA); gl.uniform1f(pBright.u.uThr, 2.5); fullscreen();
   // the glare is the heaviest post step: on phones refresh it every other frame (every third when struggling)
-  const every = FIXED_T!==null ? 1 : (quality < 0.55 ? 3 : ((DPR > 1.5 || ftAvg > 18) ? 2 : 1));
-  if (GLARE_ON && (glareTick++ % every === 0)) renderGlare();
+  const every = FIXED_T!==null ? 1 : gfxGlareEvery;
+  if (GLARE_ON && gfxGlare && (glareTick++ % every === 0)) renderGlare();
+  if (GLARE_ON && !gfxGlare && glareTick !== -1){ glareTick = -1; gl.bindFramebuffer(gl.FRAMEBUFFER, streakRT.fb); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT); }
+  if (gfxGlare && glareTick < 0) glareTick = 0;
   // bloom
   gl.useProgram(pBlur.p); gl.uniform1i(pBlur.u.uSrc,0);
   target(qB); bindT(0,qA.t); gl.uniform2f(pBlur.u.uDir,1,0); fullscreen();
@@ -2200,6 +2212,7 @@ addEventListener('keydown', e => {
   keys.add(e.code);
   if (!started){ if (!['KeyH','Escape'].includes(e.code)) start(); return; }
   if (e.code === 'KeyC') cycleCam();
+  if (e.code === 'KeyG') chooseGfx((gfxLevel + 1) % GFX.length);
   if (e.code === 'KeyR') resetSki();
   if (e.code === 'KeyM') { muted = !muted; if (audio.master) audio.master.gain.value = muted ? 0 : 0.6; flash(muted ? 'Sound off' : 'Sound on', 1.2); }
   if (e.code === 'KeyH' || e.code === 'Escape') $start.hidden = !$start.hidden;
@@ -2237,7 +2250,7 @@ canvas2.addEventListener('wheel', e => { cam.dist = clamp(cam.dist*Math.exp(e.de
 // touch: left pad steers, right pad is the throttle
 const touch = { steerId:null, steerX:0, steer:0, gasId:null };
 const hasTouch = 'ontouchstart' in window;
-if (hasTouch){ document.getElementById('touch').style.display = 'block'; document.getElementById('mbtns').style.display = 'flex'; }
+if (hasTouch){ document.getElementById('touch').style.display = 'block'; document.body.classList.add('touch'); }
 function touchCtl(e, down){
   if (!hasTouch) return false;
   if (down){
@@ -2492,7 +2505,48 @@ function runBench(B, t){
 alloc();
 const $dbg = document.getElementById('dbg'); if (DEBUG) $dbg.hidden = false;
 let last = performance.now(), frames = 0, ftAvg = 16;
-if (Q.has('q')){ quality = +Q.get('q'); alloc(); }
+/* ---------------- Graphics presets ----------------
+   Fixed levels instead of continuous adaptive resolution: resolution changes resize the canvas, which blanks it,
+   and hopping between sizes looked like flicker. "Auto" measures the first seconds once, steps down if the frame
+   rate is poor, then locks. A choice made with the Graphics button (or G) is remembered. Changes are applied at the
+   start of a frame, so the resized canvas is drawn before it is shown. */
+const GFX = [
+  { name:'Low',    cap:1.0, scale:0.60, glare:false, glareEvery:1, causEvery:4, wake:256 },
+  { name:'Medium', cap:1.5, scale:0.70, glare:true,  glareEvery:2, causEvery:2, wake:256 },
+  { name:'High',   cap:1.5, scale:0.90, glare:true,  glareEvery:1, causEvery:2, wake:256 },
+  { name:'Ultra',  cap:2.0, scale:1.00, glare:true,  glareEvery:1, causEvery:1, wake:512 },
+];
+let gfxLevel = 2, gfxAuto = true, gfxGlare = true, gfxGlareEvery = 1, gfxCausEvery = 2, pendingAlloc = false, pendingWake = 0;
+let autoFrames = 0, autoSum = 0, autoSteps = 0;
+const $bGfx = document.getElementById('bGfx');
+function applyGfx(i, why){
+  gfxLevel = i; const g = GFX[i];
+  quality = Math.min(DPR, g.cap)*g.scale/DPR;
+  if (Q.has('q')) quality = +Q.get('q');
+  gfxGlare = g.glare; gfxGlareEvery = g.glareEvery; gfxCausEvery = g.causEvery;
+  if (!Q.has('wake')) pendingWake = g.wake;
+  pendingAlloc = true;
+  $bGfx.textContent = 'Graphics: ' + g.name + (gfxAuto ? ' (auto)' : '');
+  if (why) flash('Graphics: ' + g.name + (why === 'auto' ? ' (picked automatically)' : ''), 1.6);
+}
+function chooseGfx(i){ gfxAuto = false; try { localStorage.setItem('cwj.gfx', String(i)); } catch(e){} applyGfx(i, 'user'); }
+{ let saved = null; try { saved = localStorage.getItem('cwj.gfx'); } catch(e){}
+  if (saved !== null && GFX[+saved]){ gfxAuto = false; applyGfx(+saved); }
+  else applyGfx(hasTouch || DPR > 1.5 ? 1 : 2); }
+if (Q.has('q') || Q.has('fixedq')) gfxAuto = false;
+$bGfx.addEventListener('click', e => { e.stopPropagation(); chooseGfx((gfxLevel + 1) % GFX.length); });
+// runs once per frame: the one-time automatic pick
+function autoGfx(dt){
+  if (!gfxAuto) return;
+  autoFrames++;
+  if (autoFrames < 45) return;                        // let shaders warm up after a change
+  autoSum += dt;
+  if (autoFrames < 45 + 90) return;
+  const ms = autoSum/90*1000; autoFrames = 0; autoSum = 0; autoSteps++;
+  if (ms > 21 && gfxLevel > 0 && autoSteps < 4) applyGfx(gfxLevel - 1, 'auto');
+  else { gfxAuto = false; $bGfx.textContent = 'Graphics: ' + GFX[gfxLevel].name; }
+}
+window.addEventListener('resize', () => { pendingAlloc = true; });
 const NEAR = 0.06, FAR = 4000;
 const cpuMs = { ocean:0, phys:0, fx:0 };
 // caustics are only worth their ~5M triangles when shallow water (where the floor is visible) is in range
@@ -2502,7 +2556,9 @@ function shallowsNear(x, z){
   return false;
 }
 function frame(now){
-  const dt = FIXED_DT || Math.min(0.05, (now-last)/1000); last = now;
+  const dtRaw = Math.min(0.1, (now-last)/1000), dt = FIXED_DT || Math.min(0.05, dtRaw); last = now;
+  if (pendingWake){ allocWake(pendingWake); pendingWake = 0; }
+  if (pendingAlloc){ pendingAlloc = false; alloc(); }
   if (!pebReady){ requestAnimationFrame(frame); return; }
   tSim += dt;
   const t = tSim;
@@ -2538,7 +2594,7 @@ function frame(now){
   stepWake(dt, ski.p[0], ski.p[2], [fwd[0]/fl, fwd[1]/fl], ski.foot, clamp((ski.speed-2)/14, 0, 1)*3.0*wetK,
            [nzW[0] - fwd[0]/fl*0.9, nzW[2] - fwd[1]/fl*0.9, jetFoam, 0.4]);
   if (--causticsCheck <= 0){ causticsCheck = 20; causticsOn = shallowsNear(B.pos[0], B.pos[2]); }
-  if (causticsOn && (frames & 1) === 0) renderCaustics(SUNV);          // 30 Hz is plenty for drifting light patterns
+  if (causticsOn && (frames % gfxCausEvery) === 0) renderCaustics(SUNV);   // light patterns drift slowly: no need every frame
   updateGroundMap(B.pos[0], B.pos[2]);
 
   // main pass: water + land + sky, writes depth
@@ -2591,11 +2647,8 @@ function frame(now){
   updateHUD(dt); updateAudio();
 
   ftAvg = ftAvg*0.95 + (dt*1000)*0.05; frames++;
-  if (!Q.has('fixedq') && frames > 90){
-    if (ftAvg > 21 && quality > 0.42){ quality = Math.max(0.42, quality*0.87); alloc(); frames = 0; }
-    else if (ftAvg < 14.5 && quality < 1.0){ quality = Math.min(1.0, quality*1.06); alloc(); frames = 0; }
-  }
-  if (DEBUG && frames%10===0) $dbg.textContent = `${(1000/ftAvg).toFixed(0)} fps · ${W}×${H} · q ${quality.toFixed(2)}\nv ${(ski.speed*3.6).toFixed(1)} km/h  wet ${ski.wet.toFixed(2)}  vol ${ski.submerged.toFixed(3)}  rpm ${ski.rpm.toFixed(0)}  T ${ski.thrust.toFixed(0)} vent ${ski.vent.toFixed(2)} air ${ski.airT.toFixed(2)} y ${ski.p[1].toFixed(2)}\ncpu ms: ocean ${cpuMs.ocean.toFixed(2)} physics ${cpuMs.phys.toFixed(2)} fx+rider ${cpuMs.fx.toFixed(2)}  caustics ${causticsOn?'on':'off'}  wake ${WN}²\nspray ${spray.n}  wakeRB ${WAKE.reads||0}  hmax ${ocean.hmax.toFixed(2)}  pos ${ski.p.map(x=>x.toFixed(1)).join(', ')}`;
+  autoGfx(dtRaw);
+  if (DEBUG && frames%10===0) $dbg.textContent = `${(1000/ftAvg).toFixed(0)} fps · ${W}×${H} · ${GFX[gfxLevel].name}${gfxAuto?' (auto)':''}\nv ${(ski.speed*3.6).toFixed(1)} km/h  wet ${ski.wet.toFixed(2)}  vol ${ski.submerged.toFixed(3)}  rpm ${ski.rpm.toFixed(0)}  T ${ski.thrust.toFixed(0)} vent ${ski.vent.toFixed(2)} air ${ski.airT.toFixed(2)} y ${ski.p[1].toFixed(2)}\ncpu ms: ocean ${cpuMs.ocean.toFixed(2)} physics ${cpuMs.phys.toFixed(2)} fx+rider ${cpuMs.fx.toFixed(2)}  caustics ${causticsOn?'on':'off'}  wake ${WN}²\nspray ${spray.n}  wakeRB ${WAKE.reads||0}  hmax ${ocean.hmax.toFixed(2)}  pos ${ski.p.map(x=>x.toFixed(1)).join(', ')}`;
   window.__frames = (window.__frames||0) + 1;
   if (Q.has('trace') && frames%4===0) console.log(`tr t=${tSim.toFixed(2)} v=${(ski.speed*3.6).toFixed(0)} y=${ski.p[1].toFixed(2)} wet=${ski.wet.toFixed(2)} vent=${ski.vent.toFixed(2)} air=${ski.airT.toFixed(2)} fy=${(ski.foot[2]/1000).toFixed(1)}k wakeH=${wakeHeight(ski.p[0], ski.p[2]).toFixed(2)} up=${ski.R[4].toFixed(2)}`);
   requestAnimationFrame(frame);

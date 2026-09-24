@@ -16,7 +16,7 @@ Or clone the repository and open `index.html` from it:
 git clone https://github.com/cghub7/clearwater_jetski
 ```
 
-It needs WebGL2 with float render targets. Resolution adapts to keep the frame rate up.
+It needs WebGL2 with float render targets. Graphics has four presets (Low, Medium, High, Ultra): the first run picks one automatically from the frame rate and then sticks with it, and the Graphics button or `G` switches and remembers your choice.
 
 | Control | |
 | --- | --- |
@@ -25,6 +25,7 @@ It needs WebGL2 with float render targets. Resolution adapts to keep the frame r
 | `Q` / `E` | Trim the nose down / up; pitch in the air |
 | `Shift` | Attack stance: lean in hard for tighter turns |
 | `C` | Chase / first-person camera |
+| `G` | Graphics preset: low, medium, high, ultra |
 | `1`–`5` | Sea state: glassy, light chop, choppy, rough, surf (big breaking waves) |
 | `R` · `M` · `H` | Reset · mute · help |
 | Mouse drag / wheel | Look around / zoom |
@@ -49,7 +50,7 @@ It needs WebGL2 with float render targets. Resolution adapts to keep the frame r
 | --- | --- |
 | `?debug` | Frame rate, resolution, jetski state |
 | `?fp` | Start in first person |
-| `?wake=512` | Finer wake grid for fast GPUs (the default is 256²) |
+| `?wake=512` | Force the finer wake grid (Ultra uses it; the default is 256²) |
 | `?view=wake` / `?view=surf` | Debug maps of the wake and surf height fields |
 | `?auto` | Autopilot |
 | `?bench` | Log the GPU time of each render stage to the console |
