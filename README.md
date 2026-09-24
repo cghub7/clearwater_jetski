@@ -2,7 +2,7 @@
 
 A jetski simulator with real water physics, in a single HTML file. It uses WebGL2, with no libraries, no build step and no install. It's built on [Clearwater](https://github.com/Aureliengmz/clearwater), Aurélien's real-time photoreal water renderer.
 
-![Riding past the islands](media/jetski-hero.jpg)
+![Riding the surf in rough seas](media/jetski.jpg)
 
 ## Play
 
@@ -32,10 +32,6 @@ It needs WebGL2 with float render targets. Resolution adapts to keep the frame r
 - **Jump the surf.** Turn around and head for the beach. Wait just outside the white water for a set (a bigger wave arrives every seventh), then ride out straight into it at full throttle.
 - **Jump your own wake.** Carve a tight circle at speed and cross back over the waves you made.
 - **Park on the beach.** Ride up onto the sand. With the ski beached, `W` / `S` walk it forward or back into the water.
-
-| Parked on the beach | First person |
-| --- | --- |
-| ![Parked on the sand](media/jetski-beach.jpg) | ![First person](media/jetski-fp.jpg) |
 
 ## How it works
 
