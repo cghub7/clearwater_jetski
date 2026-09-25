@@ -741,12 +741,37 @@ function skiStep(S, ocean, dt, tOff){
   const spdF = clamp(S.fwdSpeed/14, 0, 1);
   // the rider balances: aims for a bank angle that grows with steer and speed (PD on roll)
   const roll = Math.atan2(R[3], R[4]), rollRate = w[0]*R[2] + w[1]*R[5] + w[2]*R[8];
-  const onBoard = Math.abs(roll) < 1.2 && R[4] > 0.25;   // past ~70 degrees of heel the rider is in the water
+  const onBoard = Math.abs(roll) < 1.45 && R[4] > 0.12;   // past ~80 degrees of heel the rider is in the water
   S.capsized = !onBoard;
+  // time spent capsized; after ~1 s the rider climbs back on and rolls the ski upright (see below)
+  S.capT = onBoard && R[4] > 0.6 ? 0 : (S.capT || 0) + dt;
+  if (S.capT > 1.0) S.righting = true;
+  if (S.righting && R[4] > 0.85 && Math.abs(roll) < 0.4) S.righting = false;
+  // attitude controller: torque that turns the ski's up axis toward a target up (roll and pitch only, no yaw),
+  // tuned per craft as a critically damped spring of natural frequency om
+  const level = (om, noseUp, zeta) => {
+    const fh = Math.hypot(fwd[0], fwd[2]) || 1, fx = fwd[0]/fh, fz = fwd[2]/fh;
+    const cn = Math.cos(noseUp), sn = Math.sin(noseUp);
+    const tu = [-fx*sn, cn, -fz*sn], bu = [R[1], R[4], R[7]];                      // target up, body up (world)
+    const e = [bu[1]*tu[2]-bu[2]*tu[1], bu[2]*tu[0]-bu[0]*tu[2], bu[0]*tu[1]-bu[1]*tu[0]];
+    let ang = Math.asin(clamp(Math.hypot(...e), 0, 1)); if (bu[0]*tu[0]+bu[1]*tu[1]+bu[2]*tu[2] < 0) ang = Math.PI - ang;
+    const el = Math.hypot(...e) || 1, k = ang/el;                                    // axis * angle (handles upside down)
+    let ex = e[0]*k, ey = e[1]*k, ez = e[2]*k;
+    if (el < 1e-4 && ang > 3) { ex = R[2]*Math.PI; ey = R[5]*Math.PI; ez = R[8]*Math.PI; } // fully inverted: roll about the length
+    const eb = [R[0]*ex+R[3]*ey+R[6]*ez, R[2]*ex+R[5]*ey+R[8]*ez];                  // body x (pitch), body z (roll)
+    const wbx = R[0]*w[0]+R[3]*w[1]+R[6]*w[2], wbz = R[2]*w[0]+R[5]*w[1]+R[8]*w[2];
+    const I = SKI.inertia, tx = I[0]*(om*om*eb[0] - 2*zeta*om*wbx), tz = I[2]*(om*om*eb[1] - 2*zeta*om*wbz);
+    const T = bx(tx, 0, tz); Tx += T[0]; Ty += T[1]; Tz += T[2];
+  };
   const hd = SKI.h, bankT = -S.steer*(hd.bank0 + (hd.bankSpd + hd.bankStand*S.stand)*spdF);
   S.bankT = bankT;
-  const rollT = !onBoard ? 0 : air ? -S.steer*hd.airRoll - hd.airRollD*rollRate : (hd.rollKp*(bankT - roll) - hd.rollKd*rollRate);
-  const pitchT = !onBoard ? 0 : S.pitchIn*(air? hd.pitchAir : hd.pitchWater) - (air? 0 : S.stand*hd.standPitch*spdF);
+  // in the air the rider flies the ski: levels the roll and holds the nose a little up for the landing (Q/E adjust)
+  if (air && onBoard && !S.righting) level(5.5, 0.09 + 0.35*S.pitchIn, 0.9);
+  if (S.righting) level(3.2, 0, 1.0);
+  const rollT = (!onBoard || air || S.righting) ? 0 : (hd.rollKp*(bankT - roll) - hd.rollKd*rollRate)
+        // heeled well past the lean the rider wants: they hike out hard against it
+        - Math.sign(roll - bankT)*hd.rollKp*1.5*Math.max(Math.abs(roll - bankT) - 0.3, 0);
+  const pitchT = (!onBoard || air || S.righting) ? 0 : S.pitchIn*hd.pitchWater - S.stand*hd.standPitch*spdF;
   // a standing rider soaks up pitching with knees and weight (damps porpoising); nothing to push against in the air
   const pitchRate = w[0]*R[0] + w[1]*R[3] + w[2]*R[6];
   const pitchDamp = (onBoard && !air) ? -hd.riderPitchDamp*pitchRate : 0;
@@ -2853,7 +2878,7 @@ function post(t){
 
 
 /* ---------------- Game state ---------------- */
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 document.getElementById('ver').textContent = 'v' + VERSION;
 const SUN_EL = 31*Math.PI/180, SUN_AZ = 6*Math.PI/180;
 const SUNV = [Math.sin(SUN_AZ)*Math.cos(SUN_EL), Math.sin(SUN_EL), -Math.cos(SUN_AZ)*Math.cos(SUN_EL)];
@@ -3249,10 +3274,10 @@ function updateHUD(dt){
   if (airShown > 0){ airShown -= dt; if (airShown <= 0) $air.classList.remove('on'); }
   // capsized: offer a button (works on touch screens, where there is no R key)
   if (ski.R[4] < 0.15){ capsizeT += dt; } else capsizeT = 0;
-  const showFlip = capsizeT > 1.2;
+  const showFlip = capsizeT > 4.0;                             // the rider rights the ski on their own; this is a fallback
   if (showFlip !== $bFlip.classList.contains('show')){
     $bFlip.classList.toggle('show', showFlip);
-    if (showFlip) flash(hasTouch ? 'Capsized! Tap to flip upright' : 'Capsized! Press R or click to flip upright', 3);
+    if (showFlip) flash(hasTouch ? 'Stuck? Tap to flip upright' : 'Stuck? Press R or click to flip upright', 3);
   }
   if ((hudTick++ % 4) !== 0) return;
   const kmh = Math.max(0, ski.speed*3.6);
