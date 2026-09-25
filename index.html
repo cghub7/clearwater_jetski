@@ -196,11 +196,11 @@ const ON = 64;
 const OCASC = [ { L:256.0, kLo:0.0,             kHi:2*Math.PI/8.0 },    // swell & long wind waves, 8-256 m
                 { L:27.3,  kLo:2*Math.PI/8.0,   kHi:2*Math.PI/0.9 } ];  // chop, 0.9-8 m (GPU cascade does the rest)
 const SEAS = [ // wind sea Hs/Tp, swell Hs/Tp (m, s), whitecaps
-  { name:'Glassy',     Hw:0.10, Tw:2.0, Hs:0.25, Ts:9.0,  white:0.0, surf:0.3, whiteJ:0.0 },
-  { name:'Light chop', Hw:0.32, Tw:2.8, Hs:0.30, Ts:8.0,  white:0.15, surf:0.75, whiteJ:0.855 },
-  { name:'Choppy',     Hw:0.95, Tw:4.2, Hs:0.55, Ts:9.5,  white:0.55, surf:0.95, whiteJ:0.835 },
-  { name:'Rough',      Hw:1.70, Tw:5.6, Hs:0.85, Ts:11.0, white:1.0, surf:1.25, whiteJ:0.85 },
-  { name:'Surf',       Hw:2.20, Tw:6.5, Hs:1.40, Ts:12.0, white:1.0, surf:2.0, whiteJ:0.86 },   // big breaking surf on the beach
+  { name:'Glassy',     Hw:0.10, Tw:2.0, Hs:0.25, Ts:9.0,  white:0.0, surf:0.5, whiteJ:0.0 },
+  { name:'Light chop', Hw:0.32, Tw:2.8, Hs:0.30, Ts:8.0,  white:0.15, surf:1.2, whiteJ:0.855 },
+  { name:'Choppy',     Hw:0.95, Tw:4.2, Hs:0.55, Ts:9.5,  white:0.55, surf:1.6, whiteJ:0.835 },
+  { name:'Rough',      Hw:1.70, Tw:5.6, Hs:0.85, Ts:11.0, white:1.0, surf:2.3, whiteJ:0.85 },
+  { name:'Surf',       Hw:2.20, Tw:6.5, Hs:1.40, Ts:12.0, white:1.0, surf:3.0, whiteJ:0.86 },   // big breaking surf on the beach
 ];
 const WIND_DIR = Math.atan2(0.96, 0.28), SWELL_DIR = Math.atan2(0.85, -0.53); // travel directions: onshore (+z)
 function jonswap(w, wp, gamma){ const sg = w<=wp? 0.07 : 0.09; const r = Math.exp(-(w-wp)*(w-wp)/(2*sg*sg*wp*wp));
@@ -359,35 +359,65 @@ SURF.table = (() => {
     if (i > 0) th += 0.5*(k + kPrev)*SURF.ds; kPrev = k;
     t[i*4] = th; t[i*4+1] = Math.sqrt(cgDeep/cg); t[i*4+2] = h; t[i*4+3] = k;
   }
-  return t;
+  // second row: G(s) = Ks/(0.39 h), rising shoreward. A wave of offshore amplitude A starts to break where A*G = 0.95
+  const t2 = new Float32Array(SURF.N*8); t2.set(t);
+  for (let i=0;i<SURF.N;i++) t2[SURF.N*4 + i*4] = t[i*4+1]/(0.39*t[i*4+2]);
+  return t2;
 })();
+SURF.TP = 0.22*SURF.T;                // plunge: from a vertical face to the lip landing takes ~0.22 wave periods
+// where a wave of offshore-equivalent amplitude Aeff breaks (largest s with G(s) >= 0.95/Aeff), -1 if it never does
+function surfBreakS(Aeff){
+  const T = SURF.table, base = SURF.N*4, target = 0.95/Math.max(Aeff, 1e-4);
+  if (T[base] < target) return -1;
+  let lo = 0, hi = SURF.N - 1;
+  for (let it=0; it<10; it++){ const mid = (lo + hi) >> 1; if (T[base + mid*4] >= target) lo = mid; else hi = mid; }
+  return lo*SURF.ds;
+}
 const SURF_GLSL = `
 uniform sampler2D uSurfTab; uniform float uSurfA, uSurfT;
 // shared surf core (identical to surfCore in JS): shoaling, peaks along the beach, steepening, saturation
-struct Surf { float th, ph, dph, a, aRaw, q, P, eta, de, k, plg, bore; };
+struct Surf { float th, ph, dph, a, aRaw, q, P, eta, de, k, plg, bore, sf, Ks, s; };
 bool surfCore(vec2 p, out Surf S){
   float s = shoreZ(p.x) - p.y;
   if (s <= 0.0 || s >= ${SURF.max.toFixed(1)} || uSurfA <= 0.0) return false;
   float fi = s/${SURF.ds.toFixed(3)}; int i0 = int(fi); float fr = fi - float(i0);
   vec4 T = mix(texelFetch(uSurfTab, ivec2(i0,0), 0), texelFetch(uSurfTab, ivec2(i0+1,0), 0), fr);
   float fade = smoothstep(${SURF.max.toFixed(1)}, ${(SURF.max-100).toFixed(1)}, s);
+  S.Ks = T.y; S.s = s;
   S.th = T.x + ${SURF.w.toFixed(6)}*uSurfT;
-  float sn = sin(S.th/14.0), env = 0.45 + 0.55*sn*sn;
-  float pk = 1.0 + 0.30*sin(0.043*p.x + 0.9*sin(S.th/21.0)) + 0.10*sin(0.11*p.x + 2.0);
+  float sn = sin(S.th/14.0), env = 0.35 + 0.65*sn*sn;          // sets: every 7th wave is the big one
+  float pk = 1.0 + 0.25*sin(0.043*p.x + 0.9*sin(S.th/21.0)) + 0.08*sin(0.11*p.x + 2.0);
   S.aRaw = uSurfA*T.y*fade*env*pk; S.q = S.aRaw/(0.39*T.z);
   float q2 = S.q*S.q; S.a = S.aRaw/pow(1.0 + q2*q2, 0.25);
-  float qc = min(S.q, 1.0), be = 0.86*qc*sqrt(qc) + 0.06*smoothstep(1.2, 1.6, S.q);
+  float qc = min(S.q, 1.0);
   S.P = 1.0 + 2.2*qc;
-  S.ph = S.th + be*cos(S.th); S.dph = 1.0 - be*sin(S.th);
-  float c = 0.5 + 0.5*cos(S.ph);
+  // near breaking the front half of the wave compresses toward the crest: a steep face ahead of a long flat trough
+  float sf = smoothstep(0.55, 1.0, S.q)*(1.0 - 0.3*smoothstep(1.1, 1.45, S.q)), gam = mix(1.0, 0.12, sf); S.sf = sf;
+  float u = mod(S.th + 3.14159265, 6.2831853)/3.14159265 - 1.0, up = u, dud = 1.0;   // u: -1 .. 1, crest at 0, front < 0
+  if (u < 0.0){ const float E = 0.005; float nrm = pow(1.0 + E, gam) - pow(E, gam);
+    up = -(pow(-u + E, gam) - pow(E, gam))/nrm; dud = gam*pow(-u + E, gam - 1.0)/nrm; }
+  S.ph = S.th;                                                                           // crests sit at th = 2 pi K
+  float c = 0.5 + 0.5*cos(3.14159265*up);
   S.eta = 2.0*S.a*(pow(c, S.P) - 0.5*pow(0.75, S.P - 1.0));
-  S.de = 2.0*S.a*S.P*pow(max(c, 1e-6), S.P - 1.0)*(-0.5*sin(S.ph))*S.dph;
+  S.de = 2.0*S.a*S.P*pow(max(c, 1e-6), S.P - 1.0)*(-0.5*sin(3.14159265*up))*dud;
   S.k = T.w;
   S.plg = smoothstep(0.92, 1.04, S.q)*(1.0 - smoothstep(1.22, 1.5, S.q))*smoothstep(0.35, 0.75, S.aRaw);
   S.bore = smoothstep(1.1, 1.45, S.q);
   return true;
 }
 float surfHeight(vec2 p){ Surf S; return surfCore(p, S) ? S.eta : 0.0; }
+// breaking stage: 0 when the face goes vertical, 1 when the lip lands, >1 whitewater; also the plunge strength
+float surfStage(Surf S, out float ps){
+  float Aeff = S.aRaw/max(S.Ks, 1e-4), target = 0.95/max(Aeff, 1e-4);
+  ps = 0.0;
+  if (texelFetch(uSurfTab, ivec2(0,1), 0).x < target) return -9.0;
+  int lo = 0, hi = ${SURF.N-1};
+  for (int it=0; it<10; it++){ int mid = (lo + hi)/2; if (texelFetch(uSurfTab, ivec2(mid,1), 0).x >= target) lo = mid; else hi = mid; }
+  vec4 Tb = texelFetch(uSurfTab, ivec2(lo,0), 0);
+  float sb = float(lo)*${SURF.ds.toFixed(3)}, cb = sqrt(9.81*Tb.z);
+  ps = smoothstep(0.35, 0.9, Aeff*Tb.y);
+  return (sb - S.s)/(cb*${SURF.TP.toFixed(4)});
+}
 // eta, its gradient, and white water: spilling crests on small waves, the plunge's landing band, the bore after it
 float surfEval(vec2 p, out vec2 grad, out float foam){
   grad = vec2(0); foam = 0.0;
@@ -398,9 +428,14 @@ float surfEval(vec2 p, out vec2 grad, out float foam){
   float wr = mod(S.ph + 3.14159265, 6.2831853) - 3.14159265;             // 0 at the crest, negative on the shoreward face
   float roller = smoothstep(-0.95, -0.2, wr)*smoothstep(0.35, 0.0, wr);
   float trail = step(0.0, wr)*exp(-wr*1.1);
-  float landing = smoothstep(-2.0, -1.35, wr)*smoothstep(-0.55, -1.05, wr);
-  float spill = smoothstep(0.9, 1.05, S.q)*(1.0 - smoothstep(0.35, 0.75, S.aRaw))*smoothstep(-0.35, 0.0, wr)*smoothstep(0.4, 0.0, wr);
-  foam = S.bore*(roller*1.3 + trail*0.8 + 0.1) + S.plg*(landing*1.3 + trail*0.35) + spill*0.9;
+  float ps, b = surfStage(S, ps);
+  float throwPh = S.k*(0.35 + 0.25*ps)*2.0*S.a;                      // lip throw distance in phase
+  float landing = smoothstep(-1.5*throwPh - 0.25, -1.1*throwPh, wr)*smoothstep(-0.55*throwPh + 0.1, -0.85*throwPh, wr);
+  float feather = smoothstep(0.14, 0.0, abs(wr))*smoothstep(-0.15, 0.15, b)*smoothstep(1.05, 0.6, b);
+  float white = smoothstep(1.2, 1.7, b);                             // the broken wave: a rolling bore
+  float plunge = ps*(feather*0.55 + landing*smoothstep(0.85, 1.05, b)*smoothstep(2.2, 1.5, b)*1.4 + (roller*1.3 + trail*0.8 + 0.1)*white);
+  float spill = (1.0 - ps)*smoothstep(-0.1, 0.4, b)*(roller*1.0 + trail*0.6 + 0.05);
+  foam = plunge + spill;
   return S.eta;
 }`;
 // JS twin of the GLSL surf core. o: scratch object filled with the same quantities
@@ -409,25 +444,39 @@ function surfCore(x, s, tt, A, o){
   const fi = s/SURF.ds, i0 = Math.floor(fi), fr = fi - i0, T = SURF.table;
   const L = j => T[i0*4+j]*(1-fr) + T[(i0+1)*4+j]*fr;
   const Ks = L(1), h = L(2);
+  o.Ks = Ks; o.s = s;
   const fade = smoothstep(SURF.max, SURF.max-100, s);
   o.th = L(0) + SURF.w*tt;
-  const sn = Math.sin(o.th/14), env = 0.45 + 0.55*sn*sn;
-  const pk = 1 + 0.30*Math.sin(0.043*x + 0.9*Math.sin(o.th/21)) + 0.10*Math.sin(0.11*x + 2.0);
+  const sn = Math.sin(o.th/14), env = 0.35 + 0.65*sn*sn;
+  const pk = 1 + 0.25*Math.sin(0.043*x + 0.9*Math.sin(o.th/21)) + 0.08*Math.sin(0.11*x + 2.0);
   o.aRaw = A*Ks*fade*env*pk; o.q = o.aRaw/(0.39*h); o.h = h;
   const q2 = o.q*o.q; o.a = o.aRaw/Math.pow(1 + q2*q2, 0.25);
-  const qc = Math.min(o.q, 1), be = 0.86*qc*Math.sqrt(qc) + 0.06*smoothstep(1.2, 1.6, o.q);
+  const qc = Math.min(o.q, 1);
   o.P = 1 + 2.2*qc;
-  o.ph = o.th + be*Math.cos(o.th); o.dph = 1 - be*Math.sin(o.th);
-  const c = 0.5 + 0.5*Math.cos(o.ph);
+  const sf = smoothstep(0.55, 1.0, o.q)*(1 - 0.3*smoothstep(1.1, 1.45, o.q)), gam = 1 + (0.12 - 1)*sf; o.sf = sf;
+  const PI = Math.PI, u = ((o.th + PI) % (2*PI) + 2*PI) % (2*PI)/PI - 1;
+  let up = u, dud = 1;
+  if (u < 0){ const E = 0.005, nrm = Math.pow(1 + E, gam) - Math.pow(E, gam);
+    up = -(Math.pow(-u + E, gam) - Math.pow(E, gam))/nrm; dud = gam*Math.pow(-u + E, gam - 1)/nrm; }
+  o.ph = o.th;
+  const c = 0.5 + 0.5*Math.cos(PI*up);
   o.eta = 2*o.a*(Math.pow(c, o.P) - 0.5*Math.pow(0.75, o.P - 1));
-  o.de = 2*o.a*o.P*Math.pow(Math.max(c, 1e-6), o.P - 1)*(-0.5*Math.sin(o.ph))*o.dph;
+  o.de = 2*o.a*o.P*Math.pow(Math.max(c, 1e-6), o.P - 1)*(-0.5*Math.sin(PI*up))*dud;
   o.k = L(3);
   o.plg = smoothstep(0.92, 1.04, o.q)*(1 - smoothstep(1.22, 1.5, o.q))*smoothstep(0.35, 0.75, o.aRaw);
   o.bore = smoothstep(1.1, 1.45, o.q);
   return true;
 }
+// breaking stage for a surfCore result (see the GLSL twin): returns beta, sets o.ps
+function surfStage(o){
+  const Aeff = o.aRaw/Math.max(o.Ks, 1e-4), sb = surfBreakS(Aeff);
+  if (sb < 0){ o.ps = 0; return -9; }
+  const i = Math.round(sb/SURF.ds), T = SURF.table, cb = Math.sqrt(GRAV*T[i*4+2]);
+  o.ps = smoothstep(0.35, 0.9, Aeff*T[i*4+1]);
+  return (sb - o.s)/(cb*SURF.TP);
+}
 const _sc = {};
-const _sf = new Float64Array(7);
+const _sf = new Float64Array(8);
 // out: eta, w (d eta/dt), ux, uz (orbital velocity), sx, sz, breaking
 function surfEval(ocean, x, z, out){
   out.fill(0);
@@ -437,7 +486,7 @@ function surfEval(ocean, x, z, out){
   // surface orbital velocity: shoreward under crests
   const nl = Math.hypot(zp, 1), u = o.eta*SURF.w/Math.tanh(Math.max(o.k*o.h, 1e-3));
   out[0] = o.eta; out[1] = o.de*SURF.w; out[2] = -zp/nl*u; out[3] = 1/nl*u; out[4] = dds*zp; out[5] = -dds;
-  out[6] = Math.max(o.plg, o.bore);
+  out[6] = Math.max(o.plg, o.bore); out[7] = o.sf;
   return out;
 }
 
@@ -459,10 +508,12 @@ function wakeHeight(x, z){
 
 const _ws = new Float64Array(7);
 function waterSurface(ocean, x, z, out, gHint){ // out: h, w, ux, uz, sx, sz, g
-  const g = gHint === undefined ? groundH(x, z) : gHint, s = shoal(g);
+  const g = gHint === undefined ? groundH(x, z) : gHint;
+  surfEval(ocean, x, z, _sf);
+  const s = shoal(g)*(1 - 0.6*_sf[7]);                     // a surf wave going steep is glassy: the chop on it calms
   if (s > 0){ ocean.sample(x, z, _ws, s); for (let i=0;i<6;i++) out[i] = _ws[i]*s; } else { for (let i=0;i<6;i++) out[i] = 0; }
   out[6] = g;
-  surfEval(ocean, x, z, _sf); for (let i=0;i<6;i++) out[i] += _sf[i];
+  for (let i=0;i<6;i++) out[i] += _sf[i];
   out[0] += wakeHeight(x, z);
   return out;
 }
@@ -1277,62 +1328,9 @@ function waterOptics(w){
   return { a, b };
 }
 
-/* ---------------- Sky: single-scattering atmosphere (Rayleigh + Mie), baked once into a sky-view LUT ---------------- */
-const SKY_NW = 128, SKY_NH = 64;
-const skyLutTex = tex(SKY_NW, SKY_NH, gl.RGBA16F, { wrap:gl.CLAMP_TO_EDGE });
-gl.bindTexture(gl.TEXTURE_2D, skyLutTex); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
-function bakeSky(sun){
-  const out = new Float32Array(SKY_NW*SKY_NH*4);
-  const Re = 6360e3, Ra = 6420e3, bR = [5.8e-6, 13.5e-6, 33.1e-6], bM = 4e-6, Hr = 7994, Hm = 1200, g = 0.8;   // clear maritime air
-  const hitA = (ox,oy,oz,dx,dy,dz) => { const b = ox*dx+oy*dy+oz*dz, c = ox*ox+oy*oy+oz*oz-Ra*Ra, disc = b*b - c; return disc < 0 ? 0 : -b + Math.sqrt(disc); };
-  const oY = Re + 2;
-  for (let j=0;j<SKY_NH;j++) for (let i=0;i<SKY_NW;i++){
-    const v = j/(SKY_NH-1), el = v*v*Math.PI/2, az = -Math.PI + 2*Math.PI*(i + 0.5)/SKY_NW;
-    const dx = Math.cos(el)*Math.cos(az), dy = Math.sin(el), dz = Math.cos(el)*Math.sin(az);
-    const tmax = hitA(0, oY, 0, dx, dy, dz), NS = 16, seg = tmax/NS;
-    let odR = 0, odM = 0; const sR = [0,0,0], sM = [0,0,0];
-    for (let k=0;k<NS;k++){
-      const t = (k + 0.5)*seg, px = dx*t, py = oY + dy*t, pz = dz*t, h = Math.hypot(px, py, pz) - Re;
-      const hr = Math.exp(-h/Hr)*seg, hm = Math.exp(-h/Hm)*seg; odR += hr; odM += hm;
-      const tl = hitA(px, py, pz, sun[0], sun[1], sun[2]), NL = 6, sl = tl/NL; let lR = 0, lM = 0, blocked = false;
-      for (let q=0;q<NL;q++){ const u = (q + 0.5)*sl, hl = Math.hypot(px + sun[0]*u, py + sun[1]*u, pz + sun[2]*u) - Re;
-        if (hl < 0){ blocked = true; break; } lR += Math.exp(-hl/Hr)*sl; lM += Math.exp(-hl/Hm)*sl; }
-      if (blocked) continue;
-      for (let c=0;c<3;c++){ const att = Math.exp(-(bR[c]*(odR + lR) + bM*1.1*(odM + lM))); sR[c] += att*hr; sM[c] += att*hm; }
-    }
-    const mu = dx*sun[0] + dy*sun[1] + dz*sun[2];
-    const phR = 3/(16*Math.PI)*(1 + mu*mu), phM = 3/(8*Math.PI)*((1 - g*g)*(1 + mu*mu))/((2 + g*g)*Math.pow(1 + g*g - 2*g*mu, 1.5));
-    for (let c=0;c<3;c++) out[(j*SKY_NW + i)*4 + c] = sR[c]*bR[c]*phR + sM[c]*bM*phM;
-    out[(j*SKY_NW + i)*4 + 3] = 1;
-  }
-  // exposure: match the zenith brightness the scene was graded for
-  const zi = ((SKY_NH-1)*SKY_NW)*4, lz = 0.2126*out[zi] + 0.7152*out[zi+1] + 0.0722*out[zi+2], k = 0.243/Math.max(lz, 1e-9);
-  for (let i=0;i<out.length;i+=4){ out[i]*=k; out[i+1]*=k; out[i+2]*=k; }
-  gl.bindTexture(gl.TEXTURE_2D, skyLutTex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, SKY_NW, SKY_NH, gl.RGBA, gl.FLOAT, out);
-  return out;
-}
-
-/* ---------------- Main shader: sky, water, terrain ---------------- */
-const pMain = prog(VS, HEAD+`
-uniform sampler2D uSurf, uCaus, uPeb, uRip, uC0, uC1, uD0, uD1, uGround, uFoamTex; uniform vec2 uGC;
-uniform vec3 uCam, uR, uU, uF, uSun;
-uniform float uTanF, uAspect, uL, uTime, uRipSize, uL0, uL1, uHm, uWhite, uNear, uFar;
-uniform vec2 uCausShift, uRipCenter;
-uniform mat3 uEllM[2]; uniform vec3 uEllC[2];
-
-const float IOR = 1.3335;
-uniform vec3 uSigA, uSigS; uniform sampler2D uSkyLut;
-#define SIG_A uSigA
-#define SIG_S uSigS
-#define SIG_T (uSigA + uSigS)
-// sky-view LUT lookup: azimuth around, elevation with more rows near the horizon
-vec3 skyLut(vec3 d){ float e = max(d.y, 0.0); return textureLod(uSkyLut, vec2(atan(d.z, d.x)/6.2831853 + 0.5, sqrt(asin(min(e, 1.0))/1.5707963)), 0.0).rgb; }
-const vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0;
-const float PI = 3.14159265359;
-const float H0 = ${(0.5/ON).toFixed(6)};
-${TERRAIN_GLSL}
-${SURF_GLSL}
-
+/* ---------------- Sky (shared by the water, the breaking-wave lips and reflections) ---------------- */
+// needs: uniform vec3 uSun; uniform float uTime;
+const SKY_GLSL = `
 float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*.1031); p3 += dot(p3, p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
 float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.-2.*f);
   return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x), mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x), u.y); }
@@ -1355,9 +1353,9 @@ vec3 addClouds(vec3 c, vec3 d, int oct){
 vec3 sky(vec3 d, int oct){
   float e = d.y;
   float mu = dot(d, uSun);
-  vec3 hor = skyLut(normalize(vec3(d.x, 0.06, d.z) + vec3(1e-5, 0.0, 0.0))); hor = mix(vec3(dot(hor, vec3(0.2126, 0.7152, 0.0722))), hor, 0.55);
-  vec3 c = skyLut(d);
-  c += vec3(1.0, 0.86, 0.66) * 1.6*pow(max(mu,0.),2400.);            // aureole right around the sun disk
+  vec3 zen = vec3(0.09, 0.25, 0.62), hor = vec3(0.66, 0.78, 0.90);
+  vec3 c = mix(hor, zen, pow(clamp(e,0.,1.), 0.42));
+  c += vec3(1.0, 0.86, 0.66) * (0.22*pow(max(mu,0.),6.) + 0.30*pow(max(mu,0.),64.) + 1.6*pow(max(mu,0.),2400.));
   c = addClouds(c, d, oct);
   if (e > 0.095) return c;                                  // the distant headland never rises above ~5 degrees
   float a = atan(d.z, d.x);
@@ -1376,6 +1374,29 @@ vec3 sky(vec3 d, int oct){
   c = mix(c, land, smoothstep(r+w, r-w, e) * step(-0.3, e));
   return c;
 }
+`;
+
+/* ---------------- Main shader: sky, water, terrain ---------------- */
+const pMain = prog(VS, HEAD+`
+uniform sampler2D uSurf, uCaus, uPeb, uRip, uC0, uC1, uD0, uD1, uGround, uFoamTex; uniform vec2 uGC;
+uniform vec3 uCam, uR, uU, uF, uSun;
+uniform float uTanF, uAspect, uL, uTime, uRipSize, uL0, uL1, uHm, uWhite, uNear, uFar;
+uniform vec2 uCausShift, uRipCenter;
+uniform mat3 uEllM[2]; uniform vec3 uEllC[2];
+
+const float IOR = 1.3335;
+uniform vec3 uSigA, uSigS;
+#define SIG_A uSigA
+#define SIG_S uSigS
+#define SIG_T (uSigA + uSigS)
+
+const vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0;
+const float PI = 3.14159265359;
+const float H0 = ${(0.5/ON).toFixed(6)};
+${TERRAIN_GLSL}
+${SURF_GLSL}
+
+${SKY_GLSL}
 vec4 texBS(sampler2D t, vec2 uv){
   vec2 ts = vec2(textureSize(t,0)); vec2 p = uv*ts - 0.5; vec2 f = fract(p); p = floor(p);
   vec2 f2 = f*f, f3 = f2*f;
@@ -1395,8 +1416,10 @@ vec2 dispAt(vec2 p){ return textureLod(uD0, p/uL0 + H0, 0.0).xy + textureLod(uD1
 vec2 undisplace(vec2 xz, float s, int it){ vec2 p = xz; for (int i=0;i<3;i++){ if (i >= it) break; p = xz - s*dispAt(p); } return p; }
 float waterH(vec2 xz, out float g){
   g = groundFast(xz);
-  float s = shoal(g); vec2 p = s > 0.0 ? undisplace(xz, s, 1) : xz;
-  return s*(textureLod(uC0, p/uL0 + H0, 0.0).x + textureLod(uC1, p/uL1 + H0, 0.0).x) + textureLod(uRip, ripUV(xz), 0.0).x + surfHeight(xz);
+  Surf S; bool on = surfCore(xz, S);
+  float s = shoal(g)*(on ? 1.0 - 0.6*S.sf : 1.0);                  // steep surf faces are glassy
+  vec2 p = s > 0.0 ? undisplace(xz, s, 1) : xz;
+  return s*(textureLod(uC0, p/uL0 + H0, 0.0).x + textureLod(uC1, p/uL1 + H0, 0.0).x) + textureLod(uRip, ripUV(xz), 0.0).x + (on ? S.eta : 0.0);
 }
 float waterH(vec2 xz){ float g; return waterH(xz, g); }
 // far field: the long-wave cascade alone (chop, wake and surf are sub-pixel or absent out there)
@@ -1449,8 +1472,7 @@ float shipShadow(vec3 P){
 vec3 haze(vec3 col, float dist, vec3 dir){
   float hz = 1.0 - exp(-dist*0.0016);
   float muh = max(dot(normalize(vec3(dir.x,0.0,dir.z)+1e-5), uSun), 0.0);
-  vec3 hazeC = skyLut(normalize(vec3(dir.x, 0.06, dir.z) + vec3(1e-5, 0.0, 0.0)));
-  hazeC = mix(vec3(dot(hazeC, vec3(0.2126, 0.7152, 0.0722))), hazeC, 0.55);           // near-surface sea haze is whiter than the sky
+  vec3 hazeC = vec3(0.60, 0.71, 0.82) + vec3(1.0,0.86,0.66)*(0.22*pow(muh,6.0)+0.3*pow(muh,64.0));
   return mix(col, hazeC*0.95, hz*0.85);
 }
 
@@ -1461,8 +1483,9 @@ float marchWater(vec3 ro, vec3 rd, out bool hit, out float tLand){
   if (ro.y > uHm){ if (rd.y >= -1e-5) return 1e9; t = (ro.y - uHm)/(-rd.y); }
   float tEnd = rd.y < -1e-5 ? (ro.y + uHm)/(-rd.y) : 1e9; tEnd = min(tEnd, 500.0);   // beyond: flat plane under the haze
   float kx = 1.0/(abs(rd.y) + 0.6*length(rd.xz));
+  float kxSurf = 1.0/(abs(rd.y) + 3.5*length(rd.xz));             // breaking faces reach ~75 degrees
   float tp = t, dp = 1e5;
-  for (int i=0;i<110;i++){
+  for (int i=0;i<150;i++){
     if (t > tEnd) break;
     vec3 p = ro + rd*t;
     float g, d = p.y - (t < 200.0 ? waterH(p.xz, g) : waterHFar(p.xz, g));
@@ -1474,7 +1497,8 @@ float marchWater(vec3 ro, vec3 rd, out bool hit, out float tLand){
       hit = true; return a + (b-a)*fa/(fa-fb);
     }
     tp = t; dp = d;
-    t += clamp(d*kx*0.9, 0.02 + 0.035*t + 0.03*max(t - 60.0, 0.0), 60.0);
+    float kk = (uSurfA > 0.0 && shoreZ(p.x) - p.z < 115.0) ? kxSurf : kx;
+    t += clamp(d*kk*0.9, 0.02 + 0.035*t + 0.03*max(t - 60.0, 0.0), 60.0);
   }
   return 1e9;
 }
@@ -1684,7 +1708,8 @@ void main(){
   } else {
     // ---------------- water ----------------
     vec3 P = ro + wd*tw; tHit = tw;
-    float g = groundAny(P.xz), sh = shoal(g);
+    Surf Sm; bool onSurf = surfCore(P.xz, Sm);
+    float g = groundAny(P.xz), sh = shoal(g)*(onSurf ? 1.0 - 0.6*Sm.sf : 1.0);
     vec2 P0 = undisplace(P.xz, sh, 2);                                   // where this water sat before the chop moved it
     vec4 A0 = texBS(uC0, P0/uL0 + H0), A1 = texBS(uC1, P0/uL1 + H0);
     float capFoam = max(textureLod(uD0, P0/uL0 + H0, 0.0).w, textureLod(uD1, P0/uL1 + H0, 0.0).w);
@@ -1730,7 +1755,8 @@ void main(){
     vec3 skyIrr = vec3(0.62, 0.70, 0.78) * PI * 0.22;
     float s = depthHere/max(-tr.y, 0.05);
     vec3 under = vec3(0);
-    if (depthHere < 22.0){
+    float floorVis = smoothstep(0.15, 0.4, -tr.y);                   // rays skimming through a steep face never see the bed
+    if (depthHere < 22.0 && floorVis > 0.0){
       float fy = -floorDepth(P.xz);
       s = (fy - P.y)/tr.y; vec3 FP = P + tr*s;
       for (int i=0;i<2;i++){ fy = -floorDepth(FP.xz); s = (fy - P.y)/tr.y; FP = P + tr*s; }
@@ -1759,7 +1785,7 @@ void main(){
       float ao = mix(0.55, 1.0, smoothstep(0.08, 0.42, hgt));
       vec3 Esun = SUN * Ts * exp(-SIG_T*dF/(-sunT.y)) * caus * (-sunT.y) * mix(0.75, 1.0, ao) * shipShadow(FP);
       vec3 Esky = skyIrr * exp(-(SIG_A + 0.4*SIG_S)*dF*1.25) * ao;
-      under = alb/PI * (Esun + Esky) * exp(-SIG_T*s);
+      under = alb/PI * (Esun + Esky) * exp(-SIG_T*s) * floorVis;
     }
     // single scattering along the refracted path (closed form, valid shallow to deep)
     float cosS = dot(sunT, -tr);
@@ -1785,7 +1811,8 @@ void main(){
     // light shining through thin raised crests: the turquoise glow of a wave face
     float crest = sh*(A0.x + A1.x);
     float crestH = max(surfEta, 0.0) + max(crest, 0.0)*0.5;
-    under += SIG_S/SIG_T*exp(-SIG_A*1.5)*0.25 * SUN * smoothstep(0.1, 0.9, crestH) * (0.35 + 0.65*max(dot(rd, uSun), 0.0)) * shade;
+    float topRel = onSurf ? smoothstep(0.45, 0.98, surfEta/(1.47*Sm.a + 1e-3))*(0.4 + 0.8*Sm.sf) : 0.0;   // thin water near a steep crest
+    under += SIG_S/SIG_T*exp(-SIG_A*1.5)*0.25 * SUN * max(smoothstep(0.1, 0.9, crestH)*0.5, topRel) * (0.35 + 0.65*max(dot(rd, uSun), 0.0)) * shade;
     col = F*refl + (1.0-F)*under + spec;
 
     // ---- foam: wake, whitecaps on steep crests, surf, the lapping edge ----
@@ -2304,121 +2331,201 @@ gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2,4,gl.FLOAT,false,48,32);
 gl.bindVertexArray(null);
 
 
-/* ---------------- Breaking waves: curling lips, surf spray, rock splashes ---------------- */
-// The water surface is a heightfield, which cannot overhang, so the lip a plunging breaker throws is drawn as its
-// own sheet. Every frame the surf core (shared with the physics and the water shader) is scanned along the beach
-// near the camera; each plunging crest gets a lip that grows as the wave reaches its break depth, curls forward
-// and down, and collapses into the whitewater bore.
+/* ---------------- Breaking waves: plunging lips, shorebreak, surf spray, rock splashes ---------------- */
+// The water surface is a heightfield, which cannot overhang, so the lip a plunging breaker throws is its own mesh:
+// a thick sheet swept along the crest. Each wave (column along the beach x crest) has a lifecycle with memory:
+// when the crest reaches its break point (height ~0.8 x depth) the lip pitches forward, travels 0.35-0.6 x H ahead
+// of the crest while falling under gravity, lands in the trough after ~0.22 wave periods (a barrel forms between
+// lip and face), then collapses into whitewater with a splash-up. Breaking starts at the peaks and peels along the
+// crest. The reformed bore breaks again on the sand as a shorebreak.
+// Numbers from lab/field studies of plunging breakers (Peregrine 1983, Bonmarin 1989, Mead & Black 2001).
 const pLip = prog(MESH_VS, `#version 300 es
 precision highp float;
-in vec3 vP, vN; in vec4 vC; out vec4 o;                 // vC.x: 0 at the crest .. 1 at the lip's tip, vC.y: plunge
-uniform vec3 uCam, uSun; uniform float uTime;
+in vec3 vP, vN; in vec4 vC; out vec4 o;       // vC: x = 0 root .. 1 tip, y = stage (1 = impact), z = 0 outer / 1 inner, w = wave height
+uniform vec3 uCam, uSun, uSigA, uSigS; uniform float uTime; uniform sampler2D uScene; uniform vec2 uRes;
 const vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0;
 const float PI = 3.14159265359;
-float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*.1031); p3 += dot(p3, p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
-float vnoise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.-2.*f);
-  return mix(mix(hash12(i),hash12(i+vec2(1,0)),u.x), mix(hash12(i+vec2(0,1)),hash12(i+vec2(1,1)),u.x), u.y); }
-vec3 skyLite(vec3 d){
-  vec3 c = mix(vec3(0.66, 0.78, 0.90), vec3(0.09, 0.25, 0.62), pow(clamp(d.y,0.,1.), 0.42));
-  float mu = max(dot(d, uSun), 0.0); c += vec3(1.0,0.86,0.66)*(0.22*pow(mu,6.) + 0.3*pow(mu,64.));
-  return d.y < 0.0 ? mix(vec3(0.03, 0.16, 0.17), c, exp(d.y*8.0)) : c;
-}
+${SKY_GLSL}
 void main(){
   vec3 n = normalize(vN); if (!gl_FrontFacing) n = -n;
-  vec3 v = normalize(uCam - vP); float nv = abs(dot(n, v));
+  vec3 v = normalize(uCam - vP); float nv = max(dot(n, v), 0.0);
   float F = 0.02 + 0.98*pow(1.0 - nv, 5.0);
-  vec3 refl = skyLite(reflect(-v, n)) * 1.2;
-  // a thin sheet of water: light shines through it, brightest looking toward the sun
-  float back = pow(max(dot(-v, uSun), 0.0), 2.0);
+  vec3 r = reflect(-v, n);
   vec3 skyIrr = vec3(0.62, 0.70, 0.78) * PI * 0.22;
-  vec3 trans = SUN*vec3(0.018, 0.15, 0.125)*(0.35 + 0.9*back) + skyIrr*vec3(0.05, 0.20, 0.19);
-  vec3 col = mix(trans, refl, F);
-  // white water: the tumbling tip, ragged streaks along the lip, aerated root at the crest
-  float streak = vnoise(vec2(vP.x*0.9 + vP.z*0.3 + uTime*0.4, vC.x*7.0)) + 0.5*vnoise(vec2(vP.x*3.1, vC.x*19.0 - uTime));
-  float foam = smoothstep(0.55, 0.92, vC.x + 0.28*(streak - 0.75)) + smoothstep(0.16, 0.0, vC.x)*0.45;
+  vec3 ratio = uSigS/(uSigA + uSigS);
+  vec3 refl = r.y > 0.0 ? sky(r, 2)*1.25 : mix(ratio*skyIrr*0.25, sky(normalize(vec3(r.x, 0.02, r.z)), 2)*1.25, exp(r.y*6.0));
+  // a sheet of clear water: what is behind shows through (bent a little), tinted by the path through the sheet,
+  // plus light scattered inside it, which glows turquoise when the sun is behind the wave
+  float thick = vC.w*(0.09*(1.0 - vC.x) + 0.03*vC.x), path = 1.6*thick/max(nv, 0.15);
+  vec3 trans = exp(-(uSigA + uSigS)*path);
+  vec3 behind = texture(uScene, gl_FragCoord.xy/uRes + n.xz*0.035).rgb;
+  vec3 glow = ratio*exp(-uSigA*1.5)*0.25*SUN*(0.35 + 0.65*max(dot(-v, uSun), 0.0)) + ratio*skyIrr*0.12;
+  glow *= mix(1.0, 0.7, vC.z);                                    // the underside, inside the barrel, is in shade
+  vec3 col = F*refl + (1.0 - F)*(behind*trans + glow*(1.0 - trans.g)*2.2);
+  // white water: the tip tears into spray, the crest feathers as it starts to pitch, the whole lip goes white at impact
+  float stage = vC.y;
+  float streak = vnoise(vec2(vP.x*0.8 + vP.z*0.35 + uTime*0.5, vC.x*6.0)) + 0.5*vnoise(vec2(vP.x*2.9 - vP.z*0.4, vC.x*17.0 - uTime*1.3));
+  float foam = smoothstep(0.62, 0.97, vC.x + 0.22*(streak - 0.75));
+  foam += smoothstep(0.3, 0.0, vC.x)*smoothstep(0.55, 0.05, stage)*0.55*(0.6 + 0.4*streak);
+  foam += smoothstep(0.82, 1.15, stage + 0.12*(streak - 0.75));
   vec3 fcol = vec3(0.92, 0.95, 0.95)/PI*(SUN*(0.4 + 0.6*max(dot(n, uSun), 0.0)) + skyIrr*1.4)*1.15;
-  col = mix(col, fcol, clamp(foam, 0.0, 0.95));
-  float hz = 1.0 - exp(-length(uCam - vP)*0.0016);
-  col = mix(col, vec3(0.60, 0.71, 0.82)*0.95, hz*0.85);
+  col = mix(col, fcol, clamp(foam, 0.0, 0.96));
+  float dist = length(uCam - vP), hz = 1.0 - exp(-dist*0.0016);
+  float muh = max(dot(normalize(vec3(-v.x, 0.0, -v.z) + 1e-5), uSun), 0.0);
+  vec3 hazeC = vec3(0.60, 0.71, 0.82) + vec3(1.0,0.86,0.66)*(0.22*pow(muh,6.0) + 0.3*pow(muh,64.0));
+  col = mix(col, hazeC*0.95, hz*0.85);
   o = vec4(max(col, 0.0), 1.0);
 }`, 'lip');
 const lipBuf = makeGeoBuffer(true);
+const LIP = { mem: new Map(), DX: 3.0, NX: 70, NT: 10, TP: 0.22*SURF.T, TS: 0.9 };
 const _lipWs = new Float64Array(7), _lipSc = {};
 let lipCount = 0;
-// scan the beach near the camera and build the lip ribbons
+// crests on the line x = const: phase crosses 2*pi*K (K identifies the wave as it travels in)
+function crestsAt(x, A, list){
+  let prevK = null, prevPh = 0, prevS = 0;
+  for (let s = 1.5; s < 110; s += 3.5){
+    if (!surfCore(x, s, ocean.t, A, _lipSc)){ prevK = null; continue; }
+    const ph = _lipSc.ph, k = Math.floor(ph/(2*Math.PI));
+    if (prevK !== null && k !== prevK){
+      const K = Math.max(k, prevK), f = (K*2*Math.PI - prevPh)/(ph - prevPh + 1e-9), sc = prevS + (s - prevS)*clamp(f, 0, 1);
+      surfCore(x, sc, ocean.t, A, _lipSc);
+      const beta = surfStage(_lipSc);
+      list.push({ s: sc, K, q: _lipSc.q, a: _lipSc.a, aRaw: _lipSc.aRaw, h: _lipSc.h, beta, ps: _lipSc.ps });
+    }
+    prevK = k; prevPh = ph; prevS = s;
+  }
+}
+// the main plunge follows the shared breaking stage (same as the water shader's foam); memory per wave and column
+// only drives the one-shot splash and the shorebreak, which happens where the bore reaches the sand
+function lipState(key, c, now){
+  let m = LIP.mem.get(key);
+  if (!m){ m = { st: 0, t0: 0, fired: false, sbFired: false }; LIP.mem.set(key, m); }
+  m.seen = now;
+  if (c.beta >= 0 && c.beta <= 1.35 && c.ps > 0.05) return { beta: c.beta, ps: c.ps, shore: false, m, fk: 'fired' };
+  if (m.st === 0 && c.h < 1.3 && c.h > 0.55 && c.a > 0.12 && (c.beta < 0 || c.beta > 1.6)){
+    m.st = 3; m.t0 = now; m.ps = smoothstep(0.1, 0.4, c.a); m.sbFired = false;
+  }
+  if (m.st === 3){
+    const b = (now - m.t0)/LIP.TS;
+    if (b > 1.35){ m.st = 4; return null; }
+    return { beta: b, ps: m.ps, shore: true, m, fk: 'sbFired' };
+  }
+  return null;
+}
+// lip cross-section at stage beta, in the crest frame: u forward (shoreward), v up from the crest
+function lipSection(H, ps, beta, shore, yc, yl, scale){
+  const b = clamp(beta, 0, 1), col = clamp((beta - 1)/0.35, 0, 1);
+  const Xj = (0.35 + 0.25*ps)*H*(shore ? 1.25 : 1.0);
+  const X = Xj*Math.pow(b, 1.1)*scale, drop = Math.max(yc - yl, 0.3*H) + 0.06*H;
+  const D = drop*b*b*scale, up = 0.07*H*(1 - b)*scale, NT = LIP.NT;
+  const out = [], inn = [];
+  for (let i=0;i<=NT;i++){
+    const t = i/NT, u = -0.05*H + X*t, v = -0.03*H + 4*up*t*(1 - t) - D*t*t;
+    const du = X + 1e-4, dv = 4*up*(1 - 2*t) - 2*D*t, tl = Math.hypot(du, dv);
+    const nu = -dv/tl, nvv = du/tl, th = H*(0.09*(1 - t) + 0.03*t)*scale*(1 - 0.55*col);
+    out.push([u + nu*th/2, v + nvv*th/2]); inn.push([u - nu*th/2, v - nvv*th/2]);
+  }
+  return { out, inn, tip: [X - 0.05*H, -0.03*H - D] };
+}
+// scan the beach near the camera, advance each wave's lifecycle, and build the lip sheets
 function buildLips(camX, camZ, t){
   const m = MeshB(); lipCount = 0;
-  const A = ocean.surf; if (A < 0.2) { lipBuf.set(mbFinish(m)); return []; }
-  if (Math.abs(camZ - shoreZ(camX)) > 320) { lipBuf.set(mbFinish(m)); return []; }
-  const offshore = shoreZ(camX) - camZ;                                    // metres from the beach
-  const DX = 2.4, NX = 90, X0 = Math.round(camX/DX)*DX - NX*DX/2, NU = 9;
-  if (offshore > 200){ lipBuf.set(mbFinish(m)); return []; }       // surf only breaks within ~120 m of the beach
-  const samples = [];                                   // per column: crests [{s, plg, a}]
+  const A = ocean.surf, tips = [];
+  const offshore = shoreZ(camX) - camZ;
+  if (A < 0.15 || offshore > 220 || offshore < -150){ lipBuf.set(mbFinish(m)); return tips; }
+  const DX = LIP.DX, NX = LIP.NX, c0 = Math.round(camX/DX) - NX/2;
+  const cols = [];
   for (let xi=0; xi<=NX; xi++){
-    const x = X0 + xi*DX, list = [];
-    let prevK = null, prevPh = 0, prevS = 0;
-    for (let s=2; s<120; s+=3){                              // phase rises steadily shoreward: coarse steps find every crest
-      if (!surfCore(x, s, ocean.t, A, _lipSc)) { prevK = null; continue; }
-      const ph = _lipSc.ph, k = Math.floor(ph/(2*Math.PI));
-      if (prevK !== null && k !== prevK){                       // a crest lies between prevS and s
-        const target = (Math.max(k, prevK))*2*Math.PI, f = (target - prevPh)/(ph - prevPh + 1e-9), sc = prevS + (s - prevS)*clamp(f, 0, 1);
-        surfCore(x, sc, ocean.t, A, _lipSc);
-        if (_lipSc.plg > 0.03) list.push({ s: sc, plg: _lipSc.plg, a: _lipSc.a });
-      }
-      prevK = k; prevPh = ph; prevS = s;
-    }
-    samples.push({ x, list });
+    const x = (c0 + xi)*DX, list = [];
+    crestsAt(x, A, list);
+    for (const c of list){ c.key = (c0 + xi) + ':' + c.K; c.lip = lipState(c.key, c, t); }
+    cols.push({ x, list });
   }
-  // link crests on neighbouring columns into ribbons and build them
-  const tips = [];
-  const ringAt = (x, c) => {
+  for (const [k, v] of LIP.mem) if (t - v.seen > 4) LIP.mem.delete(k);
+  // a ring (cross-section in world space) for crest c at column x; scale 0 gives a closed end
+  const NT = LIP.NT;
+  const ringAt = (x, c, scale) => {
     const zp = shoreZd(x), nl = Math.hypot(zp, 1), dx = -zp/nl, dz = 1/nl, zc = shoreZ(x) - c.s;
-    waterSurface(ocean, x, zc, _lipWs);
-    const H = 2*c.a, R = (0.16 + 0.22*c.plg)*H, PHI = c.plg*2.7, yc = _lipWs[0] + 0.02;
-    const ring = [];
-    for (let u=0; u<NU; u++){
-      const f = u/(NU-1), ph = f*PHI, fw = R*Math.sin(ph) + 0.12*R*f, dn = R*(1 - Math.cos(ph));
-      ring.push([x + dx*fw, yc - dn, zc + dz*fw]);
-    }
-    return ring;
+    const H = 2*c.a;
+    waterSurface(ocean, x, zc, _lipWs); const yc = _lipWs[0];
+    const Xj = (0.35 + 0.25*c.lip.ps)*H*(c.lip.shore ? 1.25 : 1.0);
+    waterSurface(ocean, x + dx*Xj, zc + dz*Xj, _lipWs); const yl = _lipWs[0];
+    // never throw a lip onto the sand: shrink it unless it lands in water
+    const wet = clamp((yl - _lipWs[6] - 0.08)/0.35, 0, 1);
+    const L = lipSection(H, c.lip.ps, c.lip.beta, c.lip.shore, yc, yl, scale*wet);
+    const W = ([u, v]) => [x + dx*u, yc + v, zc + dz*u];
+    return { pts: [...L.out.map(W), ...L.inn.slice().reverse().map(W)], tip: W(L.tip), root: W([0, 0.02*H]), H, dir: [dx, dz], yl };
   };
-  const used = samples.map(sm => sm.list.map(() => false));
-  for (let xi=0; xi<samples.length; xi++) for (let ci=0; ci<samples[xi].list.length; ci++){
-    if (used[xi][ci]) continue;
+  const RN = 2*(NT + 1);
+  const used = cols.map(cl => cl.list.map(() => false));
+  for (let xi=0; xi<cols.length; xi++) for (let ci=0; ci<cols[xi].list.length; ci++){
+    if (used[xi][ci] || !cols[xi].list[ci].lip) continue;
     const chain = [[xi, ci]]; used[xi][ci] = true;
     let cx = xi, cc = ci;
-    while (cx + 1 < samples.length){                       // follow the crest along the beach
-      const next = samples[cx+1].list; let best = -1, bd = 4.0;
-      for (let k=0; k<next.length; k++){ const d = Math.abs(next[k].s - samples[cx].list[cc].s); if (!used[cx+1][k] && d < bd){ bd = d; best = k; } }
+    while (cx + 1 < cols.length){                                   // follow the breaking section along the crest
+      const cur = cols[cx].list[cc], next = cols[cx+1].list; let best = -1, bd = 6.0;
+      for (let k=0; k<next.length; k++){ const d = Math.abs(next[k].s - cur.s); if (!used[cx+1][k] && next[k].lip && next[k].K === cur.K && d < bd){ bd = d; best = k; } }
       if (best < 0) break;
       used[cx+1][best] = true; chain.push([cx+1, best]); cx++; cc = best;
     }
-    if (chain.length < 2) continue;
-    const rings = chain.map(([a, b]) => ringAt(samples[a].x, samples[a].list[b]));
-    const plgs = chain.map(([a, b]) => samples[a].list[b].plg);
-    const base = m.p.length/3;
-    rings.forEach((ring, i) => ring.forEach((p, u) => mbVert(m, p, [u/(NU-1), plgs[i], 0, 0])));
-    for (let i=0; i<rings.length-1; i++) for (let u=0; u<NU-1; u++){
-      const a = base + i*NU + u, b = a + 1, c = a + NU, d = c + 1; m.i.push(a, c, b, b, c, d);
+    // taper both ends into the unbroken shoulder
+    const n = chain.length, rings = [], stage = [], pls = [];
+    for (let i=0; i<n; i++){
+      const [a, b] = chain[i], c = cols[a].list[b];
+      const e = Math.min(i + 1, n - i), taper = n < 3 ? 0.6 : Math.min(1, 0.35 + 0.33*e);
+      const R = ringAt(cols[a].x, c, taper);
+      rings.push(R); stage.push(c.lip.beta); pls.push(c.lip.ps);
+      tips.push({ p: R.tip, root: R.root, dir: R.dir, H: R.H, beta: c.lip.beta, ps: c.lip.ps, shore: c.lip.shore, m: c.lip.m, fk: c.lip.fk, yl: R.yl });
     }
-    for (let i=0; i<rings.length; i++) tips.push({ p: rings[i][NU-1], root: rings[i][0], plg: plgs[i], x: samples[chain[i][0]].x });
+    const first = cols[chain[0][0]].list[chain[0][1]], last = cols[chain[n-1][0]].list[chain[n-1][1]];
+    const capA = ringAt(cols[chain[0][0]].x - DX*0.8, first, 0.02), capB = ringAt(cols[chain[n-1][0]].x + DX*0.8, last, 0.02);
+    rings.unshift(capA); stage.unshift(stage[0]); pls.unshift(pls[0]);
+    rings.push(capB); stage.push(stage[stage.length-1]); pls.push(pls[pls.length-1]);
+    const base = m.p.length/3;
+    rings.forEach((R, i) => R.pts.forEach((p, j) => {
+      const inner = j > NT, tt = inner ? (RN - 1 - j)/NT : j/NT;
+      mbVert(m, p, [tt, stage[i], inner ? 1 : 0, R.H]);
+    }));
+    for (let i=0; i<rings.length-1; i++) for (let j=0; j<RN-1; j++){
+      const a = base + i*RN + j, b = a + 1, c = a + RN, d = c + 1; m.i.push(a, c, b, b, c, d);
+    }
     lipCount++;
   }
   lipBuf.set(mbFinish(m));
   return tips;
 }
-// spray thrown from the lip's tip and blown back off the crest by the offshore breeze
+// spray: feathering blown back off the crest as it pitches, droplets torn off the lip, a splash-up where it lands
 function surfSpray(tips, camPos, dt){
+  const R = () => Math.random();
   for (const tp of tips){
-    const d = Math.hypot(tp.p[0]-camPos[0], tp.p[2]-camPos[2]); if (d > 130) continue;
-    const zp = shoreZd(tp.x), nl = Math.hypot(zp, 1), dx = -zp/nl, dz = 1/nl;
-    const n = Math.floor(tp.plg*28*dt*(d < 60 ? 1 : 0.5) + Math.random());
-    for (let i=0;i<n;i++){
-      const mist = Math.random() < 0.55, blow = Math.random() < 0.5, src = blow ? tp.root : tp.p;
-      const sx = (Math.random()-0.5)*1.4, back = blow ? -(1.5 + 2.5*Math.random()) : 0.8 + 2*Math.random();
-      emit(src[0] + sx, src[1] + 0.05, src[2] + (Math.random()-0.5)*0.4,
-           dx*back + (Math.random()-0.5), blow ? 1.5 + 2.5*Math.random() : 0.5 + 2*Math.random(), dz*back + (Math.random()-0.5),
-           mist ? 1.0 + 1.2*Math.random() : 0.5 + 0.6*Math.random(), mist ? 0.25 + 0.35*Math.random() : 0.02 + 0.04*Math.random(), mist ? 1 : 0, mist ? 0.22 : 0.8);
+    const d = Math.hypot(tp.p[0]-camPos[0], tp.p[2]-camPos[2]); if (d > 150) continue;
+    const near = d < 70 ? 1 : 0.5, [dx, dz] = tp.dir, H = tp.H, b = tp.beta;
+    // feathering: an offshore breeze blows the top of the crest back as it starts to pitch
+    const nf = Math.floor(H*9*dt*near*smoothstep(0.6, 0.0, b) + R());
+    for (let i=0;i<nf;i++){
+      const back = -(1.2 + 2.8*R()), mist = R() < 0.6;
+      emit(tp.root[0] + (R()-0.5)*1.6, tp.root[1] + 0.05, tp.root[2] + (R()-0.5)*0.6,
+           dx*back + (R()-0.5), 1.2 + 2.6*R(), dz*back + (R()-0.5),
+           mist ? 1.0 + 1.2*R() : 0.5 + 0.6*R(), mist ? 0.25 + 0.4*R() : 0.02 + 0.04*R(), mist ? 1 : 0, mist ? 0.24 : 0.8);
+    }
+    // droplets torn off the lip
+    const nl = Math.floor(H*6*dt*near*smoothstep(0.15, 0.6, b)*(b < 1.1 ? 1 : 0) + R());
+    for (let i=0;i<nl;i++){
+      emit(tp.p[0] + (R()-0.5)*1.4, tp.p[1], tp.p[2] + (R()-0.5)*0.5,
+           dx*(1 + 2*R()) + (R()-0.5), -0.5 + 2*R(), dz*(1 + 2*R()) + (R()-0.5),
+           0.4 + 0.5*R(), 0.02 + 0.04*R(), 0, 0.85);
+    }
+    // impact: the lip lands in the trough and splashes up 0.3-0.8 H
+    if (b >= 1 && !tp.m[tp.fk]){
+      tp.m[tp.fk] = true;
+      const cnt = Math.floor((40 + 70*H)*(tp.shore ? 0.6 : 1)*near), vz = Math.sqrt(2*GRAV*0.55*H);
+      for (let i=0;i<cnt;i++){
+        const mist = R() < 0.45, up = vz*(0.4 + 0.8*R()), fwd = (R() - 0.3)*3.5, side = (R()-0.5)*3.0;
+        emit(tp.p[0] + (R()-0.5)*2.4, tp.yl + 0.1, tp.p[2] + (R()-0.5)*1.0,
+             dx*fwd - dz*side, up, dz*fwd + dx*side,
+             mist ? 1.4 + 1.4*R() : 0.6 + 0.8*R(), mist ? 0.35 + 0.6*R() : 0.03 + 0.06*R(), mist ? 1 : 0, mist ? 0.32 : 0.9);
+      }
+      if (typeof splashSound === 'function' && d < 60) splashSound(Math.min(0.7, 0.15 + 0.12*H)*(1 - d/60));
     }
   }
 }
@@ -2728,11 +2835,10 @@ function post(t){
 
 
 /* ---------------- Game state ---------------- */
-const VERSION = '1.8.0';
+const VERSION = '1.9.0';
 document.getElementById('ver').textContent = 'v' + VERSION;
 const SUN_EL = 31*Math.PI/180, SUN_AZ = 6*Math.PI/180;
 const SUNV = [Math.sin(SUN_AZ)*Math.cos(SUN_EL), Math.sin(SUN_EL), -Math.cos(SUN_AZ)*Math.cos(SUN_EL)];
-bakeSky(SUNV);
 // water type: ?water=0..3, else the last one used
 let waterIdx = 1;
 { let w = Q.has('water') ? Q.get('water') : null; if (w === null){ try { w = localStorage.getItem('cwj.water'); } catch(e){} } if (w !== null && WATERS[+w]) waterIdx = +w; }
@@ -2748,8 +2854,8 @@ if (Q.has('sea')) ocean.setSea(+Q.get('sea')), ocean.first = true, ocean.setSea(
 const pSurfDbg = prog(VS, HEAD + TERRAIN_GLSL + SURF_GLSL + `uniform vec2 uC; void main(){ vec2 p = uC + (vUv - 0.5)*vec2(120.0, 120.0*0.5625);
   vec2 g; float f; float e = surfEval(p, g, f); float land = step(0.0, groundH(p));
   o = vec4(max(e,0.0), f*0.5 + land*0.5, max(-e,0.0), 1.0) + step(abs(fract(e*5.0)-0.5), 0.03)*0.15; }`, 'surfDbg');
-const surfTex = tex(SURF.N, 1, gl.RGBA32F, { filter:gl.NEAREST });
-gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, SURF.N, 1, gl.RGBA, gl.FLOAT, SURF.table);
+const surfTex = tex(SURF.N, 2, gl.RGBA32F, { filter:gl.NEAREST });                // row 0: phase, shoaling, depth, k; row 1: G(s)
+gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, SURF.N, 2, gl.RGBA, gl.FLOAT, SURF.table);
 ocean.update(0, 0);
 // craft: ?craft=sit|stand, else the last one ridden
 { let c = Q.get('craft'); if (!c){ try { c = localStorage.getItem('cwj.craft'); } catch(e){} } setCraft(CRAFTS[c] ? c : 'stand'); }
@@ -2767,7 +2873,7 @@ function selectCraft(id){
   let x = p[0], z = p[2]; if (groundH(x, z) > -1.2){ x = SPAWN[0]; z = SPAWN[1]; }
   ski.reset(x, z, yaw, ocean); cam.init = false;
 }
-let tSim = 0, started = false, camMode = Q.has('fp') ? 1 : 0, muted = false;
+let tSim = Q.has('t0') ? +Q.get('t0') : 0, started = false, camMode = Q.has('fp') ? 1 : 0, muted = false;
 const AUTO = Q.has('auto');
 // test hooks: ?pre=6 simulates 6 s of full-throttle riding before the first frame, ?dt=0.033 fixes the frame step
 const FIXED_DT = Q.has('dt') ? +Q.get('dt') : 0;
@@ -2981,6 +3087,11 @@ function updateCamera(dt, riderHead){
     r = norm3(cross3(f, up)); u = cross3(r, f);
     cam.fov = 74 + 8*clamp(speedKmh/100, 0, 1);
   }
+  if (Q.has('cam')){                          // debug: fixed camera ?cam=x,y,z,yaw,pitch (yaw 0 looks toward -z)
+    const [x, y, z, yw, pt] = Q.get('cam').split(',').map(Number);
+    pos = [x, y, z]; f = [Math.sin(yw)*Math.cos(pt), Math.sin(pt), -Math.cos(yw)*Math.cos(pt)];
+    r = norm3(cross3(f, [0,1,0])); u = cross3(r, f); cam.fov = 60;
+  }
   cam.pos = pos;
   cam.B = { pos, f, r, u };
   return cam.B;
@@ -3099,6 +3210,22 @@ function runBench(B, t){
   console.log('BENCH ' + res.join(' | ') + ` @ ${W}x${H}`);
 }
 
+/* ---------------- ?probe: compare the GPU surf with the CPU surf along x = 0 ---------------- */
+let probeFn = null;
+if (Q.has('probe')){
+  const pr = prog(VS, HEAD + TERRAIN_GLSL + SURF_GLSL + `
+  void main(){ float s = floor(gl_FragCoord.x)*2.0; vec2 p = vec2(0.0, shoreZ(0.0) - s); o = vec4(surfHeight(p), s, 0.0, 1.0); }`, 'probe');
+  const prt = rt(48, 1, gl.RGBA32F, { filter: gl.NEAREST }), buf = new Float32Array(48*4), w = new Float64Array(7);
+  probeFn = () => {
+    target(prt); gl.useProgram(pr.p); bindT(7, surfTex); gl.uniform1i(pr.u.uSurfTab, 7);
+    gl.uniform1f(pr.u.uSurfA, ocean.surf); gl.uniform1f(pr.u.uSurfT, ocean.t); fullscreen();
+    gl.readPixels(0, 0, 48, 1, gl.RGBA, gl.FLOAT, buf);
+    let line = 'PROBE t=' + ocean.t.toFixed(2) + ' surf=' + ocean.surf.toFixed(2) + ' |';
+    for (let i=0;i<48;i+=3){ const sv = buf[i*4+1]; surfEval(ocean, 0, shoreZ(0) - sv, w); line += ` s${sv}: gpu ${buf[i*4].toFixed(2)} cpu ${w[0].toFixed(2)} |`; }
+    console.log(line);
+  };
+}
+
 /* ---------------- Loop ---------------- */
 alloc();
 const $dbg = document.getElementById('dbg'); if (DEBUG) $dbg.hidden = false;
@@ -3168,6 +3295,7 @@ function autoGfx(dt){
 }
 window.addEventListener('resize', () => { pendingAlloc = true; });
 const NEAR = 0.06, FAR = 4000;
+let sceneRT = null;
 const cpuMs = { ocean:0, phys:0, fx:0 };
 // caustics are only worth their ~5M triangles when shallow water (where the floor is visible) is in range
 let causticsOn = true, causticsCheck = 0;
@@ -3195,7 +3323,7 @@ function frame(now){
   emitSpray(dt);
   const lipTips = buildLips(cam.pos ? cam.pos[0] : ski.p[0], cam.pos ? cam.pos[2] : ski.p[2], t);
   if (cam.pos){ surfSpray(lipTips, cam.pos, dt); rockSplashes(cam.pos, dt); }
-  if (DEBUG) window.__lips = lipTips.filter((_, i) => i % 6 === 0).map(tp => [tp.x.toFixed(1), tp.root.map(v => v.toFixed(1)).join('/'), tp.plg.toFixed(2)]).slice(0, 12);
+  if (DEBUG) window.__lips = lipTips.filter((_, i) => i % 4 === 0).map(tp => [tp.root.map(v => v.toFixed(1)).join('/'), tp.H.toFixed(1), tp.beta.toFixed(2), tp.shore ? 'shore' : 'main']).slice(0, 16);
   updateSpray(dt);
   crouch *= Math.exp(-dt*3);
 
@@ -3228,9 +3356,9 @@ function frame(now){
   target(hdrRT); gl.disable(gl.BLEND);
   gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.ALWAYS); gl.depthMask(true);
   gl.useProgram(pMain.p);
-  bindT(0,surfRT.t); bindT(1,causRT.t); bindT(2,pebTex); bindT(3,ripN.t); bindT(4,casTex[0]); bindT(5,casTex[1]); bindT(6,groundRT.t); bindT(7,surfTex); bindT(8,casTex2[0]); bindT(9,casTex2[1]); bindT(10,foamTexRT.t); bindT(11,skyLutTex);
+  bindT(0,surfRT.t); bindT(1,causRT.t); bindT(2,pebTex); bindT(3,ripN.t); bindT(4,casTex[0]); bindT(5,casTex[1]); bindT(6,groundRT.t); bindT(7,surfTex); bindT(8,casTex2[0]); bindT(9,casTex2[1]); bindT(10,foamTexRT.t);
   const u = pMain.u;
-  gl.uniform1i(u.uSurf,0); gl.uniform1i(u.uCaus,1); gl.uniform1i(u.uPeb,2); gl.uniform1i(u.uRip,3); gl.uniform1i(u.uC0,4); gl.uniform1i(u.uC1,5); gl.uniform1i(u.uGround,6); gl.uniform1i(u.uSurfTab,7); gl.uniform1i(u.uD0,8); gl.uniform1i(u.uD1,9); gl.uniform1i(u.uFoamTex,10); gl.uniform1i(u.uSkyLut,11); gl.uniform3fv(u.uSigA, waterOpt.a); gl.uniform3fv(u.uSigS, waterOpt.b); gl.uniform1f(u.uRefl, gfxRefl ? 1 : 0); gl.uniform2f(u.uGC, GMAP.cx, GMAP.cz);
+  gl.uniform1i(u.uSurf,0); gl.uniform1i(u.uCaus,1); gl.uniform1i(u.uPeb,2); gl.uniform1i(u.uRip,3); gl.uniform1i(u.uC0,4); gl.uniform1i(u.uC1,5); gl.uniform1i(u.uGround,6); gl.uniform1i(u.uSurfTab,7); gl.uniform1i(u.uD0,8); gl.uniform1i(u.uD1,9); gl.uniform1i(u.uFoamTex,10); gl.uniform3fv(u.uSigA, waterOpt.a); gl.uniform3fv(u.uSigS, waterOpt.b); gl.uniform1f(u.uRefl, gfxRefl ? 1 : 0); gl.uniform2f(u.uGC, GMAP.cx, GMAP.cz);
   gl.uniform1f(u.uSurfA, ocean.surf*(+(Q.get('surfx')||1))); gl.uniform1f(u.uSurfT, ocean.t);
   gl.uniform3fv(u.uCam, B.pos); gl.uniform3fv(u.uR, B.r); gl.uniform3fv(u.uU, B.u); gl.uniform3fv(u.uF, B.f); gl.uniform3fv(u.uSun, SUNV);
   gl.uniform1f(u.uTanF, tanF); gl.uniform1f(u.uAspect, asp); gl.uniform1f(u.uL, L); gl.uniform1f(u.uTime, t);
@@ -3242,6 +3370,7 @@ function frame(now){
   gl.uniformMatrix3fv(u.uEllM, false, new Float32Array([...E0[0], ...E1[0]])); gl.uniform3fv(u.uEllC, new Float32Array([...E0[1], ...E1[1]]));
   fullscreen();
   if (Q.has('bench') && frames === 25) runBench(B, t);
+  if (probeFn && frames % 30 === 5) probeFn();
 
   // meshes
   const VP = viewProj(B, cam.fov, asp, NEAR, FAR);
@@ -3252,9 +3381,16 @@ function frame(now){
   gl.uniformMatrix3fv(pMesh.u.uShM, false, E1[0]); gl.uniform3fv(pMesh.u.uShC, E1[1]);
   for (const [buf, shOn] of [[skiBuf, 1], [riderBuf, 0]]){ gl.uniform1f(pMesh.u.uShOn, shOn); gl.bindVertexArray(buf.vao); gl.drawElements(gl.TRIANGLES, buf.n, gl.UNSIGNED_INT, 0); }
   if (lipBuf.n && !Q.has('nolips')){                              // curling lips of plunging breakers
+    // the lips are clear water: give them a copy of the frame so far to look through
+    if (!sceneRT || sceneRT.w !== W || sceneRT.h !== H){ if (sceneRT){ gl.deleteTexture(sceneRT.t); gl.deleteFramebuffer(sceneRT.fb); } sceneRT = rt(W, H, gl.RGBA16F); }
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, hdrRT.fb); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, sceneRT.fb);
+    gl.blitFramebuffer(0, 0, W, H, 0, 0, W, H, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, null); gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, null); target(hdrRT);
     gl.useProgram(pLip.p);
+    bindT(0, sceneRT.t); gl.uniform1i(pLip.u.uScene, 0); gl.uniform2f(pLip.u.uRes, W, H);
     gl.uniformMatrix4fv(pLip.u.uVP, false, VP); gl.uniformMatrix4fv(pLip.u.uM, false, new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]));
     gl.uniform3fv(pLip.u.uCam, B.pos); gl.uniform3fv(pLip.u.uSun, SUNV); gl.uniform1f(pLip.u.uTime, t);
+    gl.uniform3fv(pLip.u.uSigA, waterOpt.a); gl.uniform3fv(pLip.u.uSigS, waterOpt.b);
     gl.bindVertexArray(lipBuf.vao); gl.drawElements(gl.TRIANGLES, lipBuf.n, gl.UNSIGNED_INT, 0);
   }
   // spray
