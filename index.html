@@ -503,7 +503,7 @@ function wakeHeight(x, z){
   if (W.mask){ const [cx, cz, fxv, fzv, a, b] = W.mask, qx = x-cx, qz = z-cz;
     const u = (qx*fxv + qz*fzv)/(a*1.4 + 0.9), v = (-qx*fzv + qz*fxv)/(b*1.4 + 0.9), r = Math.sqrt(u*u+v*v);
     k = smoothstep(1.0, 1.7, r); }
-  return h*k;
+  return clamp(h*k, -0.5, 0.8);                               // the local waves never exceed what the renderer shows
 }
 
 const _ws = new Float64Array(7);
@@ -1017,11 +1017,22 @@ float footShape(vec2 uv){
   float r2 = a*a + b*b; return r2 < 1.0 ? (1.0-r2)*(1.0-r2) : 0.0; }
 bool inside(ivec2 i, int n){ return i.x >= 0 && i.y >= 0 && i.x < n && i.y < n; }`;
 const pWSrc = prog(VS, HEAD + WAKE_FOOT + `
-uniform sampler2D uSrc; uniform ivec2 uShift;
+uniform sampler2D uSrc; uniform ivec2 uShift; uniform float uTexel;
+uniform vec4 uPulse;                                           // ring wave from a slam: centre uv, radius uv, amplitude (m)
+vec2 at(ivec2 i, int N){ return inside(i, N) ? texelFetch(uSrc, i, 0).xy : vec2(0); }
 void main(){
   int N = textureSize(uSrc,0).x; ivec2 id = ivec2(gl_FragCoord.xy) + uShift;
-  vec2 hp = inside(id, N) ? texelFetch(uSrc, id, 0).xy : vec2(0);
+  vec2 hp = at(id, N);
+  // keep the local waves physical: slopes above breaking steepness are pulled back toward the local mean and the
+  // height is soft-capped at ~1 m; the energy removed leaves phi too (the foam pass whitens those steep spots)
+  float x1 = at(id + ivec2(1,0), N).x, x0 = at(id - ivec2(1,0), N).x, z1 = at(id + ivec2(0,1), N).x, z0 = at(id - ivec2(0,1), N).x;
+  float mean = 0.25*(x1 + x0 + z1 + z0), g = length(vec2(x1 - x0, z1 - z0))/(2.0*uTexel), h = hp.x;
+  if (g > 0.6) h = mean + (h - mean)*0.6/g;
+  h = 1.0*tanh(h/1.0);
+  hp.y *= clamp(abs(hp.x) > 1e-4 ? h/hp.x : 1.0, 0.0, 1.0); hp.x = h;
   hp.y -= uFootS.z * footShape(vUv);                          // d(phi)/dt = -g h - p/rho
+  if (uPulse.w != 0.0){ float r = length(vUv - uPulse.xy)/uPulse.z;
+    hp.x += uPulse.w*(exp(-pow((r - 1.0)/0.35, 2.0)) - 0.6*exp(-r*r/0.25)); }
   vec2 e = min(vUv, 1.0-vUv); hp *= mix(0.93, 1.0, smoothstep(0.0, 0.12, min(e.x, e.y)));   // absorbing border
   o = vec4(hp, 0, 0);
 }`, 'wakeSrc');
@@ -1056,7 +1067,7 @@ void main(){
   o = vec4((H2 + vec2(-P2.y, P2.x))*damp, 0, 0);                          // repack h + i phi
 }`, 'wakeProp');
 const pWFoam = prog(VS, HEAD + WAKE_FOOT + `
-uniform sampler2D uFoamSrc, uState; uniform ivec2 uShift; uniform float uDt, uEdge, uSeed, uTexel; uniform vec4 uJet;
+uniform sampler2D uFoamSrc, uState; uniform ivec2 uShift; uniform float uDt, uEdge, uSeed, uTexel; uniform vec4 uJet, uRing;
 float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*.1031); p3 += dot(p3, p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
 float fo(ivec2 i, int N){ return inside(i, N) ? texelFetch(uFoamSrc, i, 0).x : 0.0; }
 float hh(ivec2 i, int N){ return texelFetch(uState, clamp(i, ivec2(0), ivec2(N-1)), 0).x; }
@@ -1070,11 +1081,14 @@ void main(){
   f += max(length(g) - 0.42, 0.0)*uDt*4.0*away;                  // steep wake crests spill
   float s = footShape(vUv); f += uEdge*uDt*s*(1.0 - s)*6.0;      // turbulence along the wetted hull
   vec2 jq = (vUv - uJet.xy)/uJet.w; f += uJet.z*uDt*exp(-dot(jq,jq))*(0.5 + hash12(vUv*977.0 + uSeed));
+  if (uRing.w > 0.0){ float d = length(vUv - uRing.xy), w = 0.12*uRing.z + 0.003;        // spreading foam ring after a slam
+    f += uRing.w*uDt*exp(-pow((d - uRing.z)/w, 2.0))*(0.6 + 0.8*hash12(vUv*613.0 + uSeed)); }
   o = vec4(min(f, 1.6), 0, 0, 1);
 }`, 'wakeFoam');
 const pWOut = prog(VS, HEAD + `
 uniform sampler2D uState, uFoam; uniform float uTexel;
-float hh(ivec2 i, int N){ float h = texelFetch(uState, clamp(i, ivec2(0), ivec2(N-1)), 0).x; return h > -0.2 ? h : -0.2 - 0.25*(1.0 - exp((h + 0.2)/0.25)); }
+float hh(ivec2 i, int N){ float h = texelFetch(uState, clamp(i, ivec2(0), ivec2(N-1)), 0).x;
+  return h > 0.7 ? 0.7 + 0.3*(1.0 - exp(-(h - 0.7)/0.3)) : (h > -0.2 ? h : -0.2 - 0.25*(1.0 - exp((h + 0.2)/0.25))); }
 void main(){
   int N = textureSize(uState,0).x; ivec2 id = ivec2(gl_FragCoord.xy);
   vec2 e = min(vUv, 1.0-vUv); float edge = smoothstep(0.0, 0.1, min(e.x,e.y));
@@ -1098,13 +1112,14 @@ function setFoot(P, foot, fwd){
   const prev = footPrev || [cx, cz], sweep = Math.hypot(cx - prev[0], cz - prev[1]);
   // the impulse is spread over the swept strip, so the total stays right at any speed
   const gain = 1 + (WAKE_GAIN - 1)*smoothstep(4, 10, foot[5] || 0);                     // only a planing hull throws spray sheets
-  const P0 = Math.min(gain*fy/(RHO*(Math.PI*a*b/3)), 200) * (2*a/(2*a + sweep));
+  // slam loads (up to ~10x the weight) belong to the splash, not the wave field: cap at 1.3x the weight
+  const P0 = Math.min(gain*Math.min(fy, 1.3*SKI.mass*GRAV)/(RHO*(Math.PI*a*b/3)), 200) * (2*a/(2*a + sweep));
   gl.uniform4f(P.u.uFoot, (cx-ripCenter[0])/RSIZE+0.5, (cz-ripCenter[1])/RSIZE+0.5, fwd[0], fwd[1]);
   gl.uniform2f(P.u.uFootPrev, (prev[0]-ripCenter[0])/RSIZE+0.5, (prev[1]-ripCenter[1])/RSIZE+0.5);
   return [a/RSIZE, b/RSIZE, P0];
 }
 // one wake step per frame. foot = ski.foot [x, z, vertical force, half length, half width]; jet = [x, z, foam rate, radius]
-function stepWake(dt, skiX, skiZ, fwd, foot, edgeFoam, jet){
+function stepWake(dt, skiX, skiZ, fwd, foot, edgeFoam, jet, ev){
   dt = Math.min(dt, 1/20);
   const want = [skiX - fwd[0]*RSIZE*0.22, skiZ - fwd[1]*RSIZE*0.22];
   let sx = Math.round((want[0]-ripCenter[0])/WDX), sz = Math.round((want[1]-ripCenter[1])/WDX);
@@ -1116,7 +1131,9 @@ function stepWake(dt, skiX, skiZ, fwd, foot, edgeFoam, jet){
   gl.disable(gl.BLEND);
   // 1. shift + hull pressure + absorbing border (space)
   target(wP[1-wCur]); gl.useProgram(pWSrc.p); bindT(0, wP[wCur].t); gl.uniform1i(pWSrc.u.uSrc, 0); gl.uniform2i(pWSrc.u.uShift, sx, sz);
-  const fs = setFoot(pWSrc, foot, fwd); gl.uniform3f(pWSrc.u.uFootS, fs[0], fs[1], fs[2]*dt); fullscreen();
+  const fs = setFoot(pWSrc, foot, fwd); gl.uniform3f(pWSrc.u.uFootS, fs[0], fs[1], fs[2]*dt); gl.uniform1f(pWSrc.u.uTexel, WDX);
+  const pu = ev && ev.pulse; gl.uniform4f(pWSrc.u.uPulse, pu ? (pu[0]-ripCenter[0])/RSIZE+0.5 : 0, pu ? (pu[1]-ripCenter[1])/RSIZE+0.5 : 0, pu ? pu[2]/RSIZE : 1, pu ? pu[3] : 0);
+  fullscreen();
   // 2. to wavenumbers, 3. exact propagation, 4. back to space
   const i = wakeFFT(1-wCur, -1);
   target(wP[1-i]); gl.useProgram(pWProp.p); bindT(0, wP[i].t); gl.uniform1i(pWProp.u.uSrc, 0); gl.uniform1f(pWProp.u.uDt, dt); gl.uniform1f(pWProp.u.uL, RSIZE); fullscreen();
@@ -1127,6 +1144,7 @@ function stepWake(dt, skiX, skiZ, fwd, foot, edgeFoam, jet){
   const ff = setFoot(pWFoam, foot, fwd); gl.uniform3f(pWFoam.u.uFootS, ff[0], ff[1], 0);
   gl.uniform1f(pWFoam.u.uDt, dt); gl.uniform1f(pWFoam.u.uEdge, edgeFoam); gl.uniform1f(pWFoam.u.uSeed, Math.random()*100); gl.uniform1f(pWFoam.u.uTexel, WDX);
   gl.uniform4f(pWFoam.u.uJet, (jet[0]-ripCenter[0])/RSIZE+0.5, (jet[1]-ripCenter[1])/RSIZE+0.5, jet[2], jet[3]/RSIZE);
+  const rg = ev && ev.ring; gl.uniform4f(pWFoam.u.uRing, rg ? (rg[0]-ripCenter[0])/RSIZE+0.5 : 0, rg ? (rg[1]-ripCenter[1])/RSIZE+0.5 : 0, rg ? rg[2]/RSIZE : 0, rg ? rg[3] : 0);
   fullscreen(); wFoamCur = 1-wFoamCur;
   // 6. height, slope, foam for the water shader
   target(ripN); gl.useProgram(pWOut.p); bindT(0, wP[wCur].t); bindT(1, wFoam[wFoamCur].t);
@@ -2835,7 +2853,7 @@ function post(t){
 
 
 /* ---------------- Game state ---------------- */
-const VERSION = '1.9.0';
+const VERSION = '2.0.0';
 document.getElementById('ver').textContent = 'v' + VERSION;
 const SUN_EL = 31*Math.PI/180, SUN_AZ = 6*Math.PI/180;
 const SUNV = [Math.sin(SUN_AZ)*Math.cos(SUN_EL), Math.sin(SUN_EL), -Math.cos(SUN_AZ)*Math.cos(SUN_EL)];
@@ -2877,6 +2895,7 @@ let tSim = Q.has('t0') ? +Q.get('t0') : 0, started = false, camMode = Q.has('fp'
 const AUTO = Q.has('auto');
 // test hooks: ?pre=6 simulates 6 s of full-throttle riding before the first frame, ?dt=0.033 fixes the frame step
 const FIXED_DT = Q.has('dt') ? +Q.get('dt') : 0;
+if (Q.has('drop')){ ski.p[1] += +Q.get('drop'); const v = +(Q.get('dropv')||12); ski.v = [0, 0, -v]; }   // test hook: fall onto the water (jump landing)
 if (Q.has('flipped')){ ski.q = [0, 0, 1, 0]; ski.p[1] += 0.6; }     // test hook: start capsized
 if (Q.has('pre')){
   const T = +Q.get('pre'), steer = Q.has('presteer') ? +Q.get('presteer') : 0;
@@ -3157,18 +3176,67 @@ function emitSpray(dt){
            mist ? 0.35 + 0.3*rnd01() : 0.2 + 0.2*rnd01(), mist ? 0.07 + 0.05*rnd01() : 0.012 + 0.018*rnd01(), mist ? 1 : 0, mist ? 0.18 : 0.7);
     }
   }
-  // landing / slam
-  if (impactPeak > 16000 && spd > 1){
-    const k = clamp(impactPeak/60000, 0, 1), cnt = Math.floor(120 + 700*k);
-    for (let i=0;i<cnt;i++){
-      const s = rnd01(), side = rnd01() < 0.5 ? -1 : 1, h = hullSection(s*0.8), z = hullZ(s*0.8);
-      const p = bodyToWorld([h[2][0]*side, h[2][1], z]);
-      const out = [R[0]*side, 0, R[6]*side], sp = 1.5 + 5.5*k*rnd01(), mist = rnd01() < 0.35;
-      emit(p[0], p[1], p[2], v[0]*0.5 + out[0]*sp + (rnd01()-0.5), 1.5 + 5*k*rnd01(), v[2]*0.5 + out[2]*sp + (rnd01()-0.5),
-           mist ? 1.2 + rnd01() : 0.5 + 0.8*rnd01(), mist ? 0.2 + 0.2*rnd01() : 0.03 + 0.05*rnd01(), mist ? 1 : 0, mist ? 0.3 : 0.9);
-    }
-    splashSound(0.3 + k); cam.shake = Math.max(cam.shake, 0.05 + 0.25*k); crouch = Math.max(crouch, 0.4 + 0.6*k);
+  // landing: a slam (Wagner/von Karman impact). Root jets and side sheets leave the chines at 1.2-2x the impact
+  // speed, 20-45 deg above the water; a crown splash follows at 35-70 deg; fine droplets go higher. Counts scale
+  // with impact energy (q^0.6). A small ring wave and a spreading foam ring are handed to the wake.
+  if (slam.pending){
+    const V = slam.pending; slam.pending = 0;
+    const q = clamp((V/5)*(V/5), 0.2, 8), qn = Math.pow(q, 0.6), side = [R[0], R[6]], hl = Math.hypot(side[0], side[1]) || 1;
+    const sx = side[0]/hl, sz = side[1]/hl;
+    const put = (n, fn) => { for (let i=0;i<n;i++) fn(); };
+    const chine = () => { const s = 0.1 + 0.75*rnd01(), sd = rnd01() < 0.5 ? -1 : 1, h = hullSection(s); return [bodyToWorld([h[2][0]*sd, h[2][1], hullZ(s)]), sd]; };
+    put(Math.floor(60*qn), () => {                              // root jets / side sheets
+      const [p, sd] = chine(), th = (20 + 25*rnd01())*Math.PI/180, sp = Math.min((1.2 + 0.8*rnd01())*V, 25);
+      emit(p[0], p[1], p[2], v[0]*0.5 + sx*sd*sp*Math.cos(th), sp*Math.sin(th), v[2]*0.5 + sz*sd*sp*Math.cos(th),
+           0.5 + 0.5*rnd01(), 0.035 + 0.05*rnd01(), 0, 0.9);
+    });
+    put(Math.floor(22*qn), () => {                              // crown splash: slower, steeper, misty
+      const [p, sd] = chine(), th = (35 + 35*rnd01())*Math.PI/180, sp = (0.6 + 0.4*rnd01())*V;
+      emit(p[0], p[1], p[2], v[0]*0.3 + sx*sd*sp*Math.cos(th), sp*Math.sin(th), v[2]*0.3 + sz*sd*sp*Math.cos(th),
+           1.2 + 1.0*rnd01(), 0.3 + 0.4*rnd01(), 1, 0.3);
+    });
+    put(Math.floor(150*qn), () => {                             // secondary droplets
+      const [p, sd] = chine(), th = (45 + 40*rnd01())*Math.PI/180, sp = (0.3 + 0.9*rnd01())*V;
+      emit(p[0], p[1], p[2], v[0]*0.4 + sx*sd*sp*Math.cos(th) + (rnd01()-0.5), sp*Math.sin(th), v[2]*0.4 + sz*sd*sp*Math.cos(th) + (rnd01()-0.5),
+           0.4 + 0.7*rnd01(), 0.015 + 0.03*rnd01(), 0, 0.85);
+    });
+    const draft = 0.25;
+    slam.pulse = [ski.p[0], ski.p[2], 1.0 + 0.1*V, Math.min(0.4*draft, 0.012*V)];
+    slam.ring = { x: ski.p[0], z: ski.p[2], t: 0, V, str: Math.min(0.7*Math.sqrt(q), 1.4) };
+    splashSound(Math.min(1.2, 0.25 + 0.1*V)); cam.shake = Math.max(cam.shake, Math.min(0.35, 0.02*V*V/4)); crouch = Math.max(crouch, clamp(V/8, 0.3, 1));
   }
+  // nosedive: the bow buries in a wave face and green water bursts over the hood
+  const bh = hullSection(0.93), bow = bodyToWorld([0, bh[8][1], hullZ(0.93)]);
+  waterSurface(ocean, bow[0], bow[2], _nd);
+  const bury = _nd[0] - bow[1];
+  if (bury > 0.1 && ski.fwdSpeed > 4){
+    const k = Math.min(bury, 1.2)*clamp(ski.fwdSpeed/12, 0, 1.5), cnt = Math.floor(420*k*dt + rnd01());
+    for (let i=0;i<cnt;i++){
+      const sd = rnd01() < 0.5 ? -1 : 1, fw = ski.fwdSpeed*(0.3 + 0.4*rnd01()), up = 1.5 + 3.5*rnd01()*Math.min(k, 1), out = 1 + 3*rnd01(), mist = rnd01() < 0.35;
+      emit(bow[0] + sx0()*sd*0.3, _nd[0] + 0.05, bow[2] + sz0()*sd*0.3,
+           fwd[0]*fw + sx0()*sd*out, up, fwd[2]*fw + sz0()*sd*out,
+           mist ? 0.8 + 0.8*rnd01() : 0.4 + 0.5*rnd01(), mist ? 0.25 + 0.3*rnd01() : 0.03 + 0.05*rnd01(), mist ? 1 : 0, mist ? 0.28 : 0.9);
+    }
+    if (bury > 0.35 && !slam.divedRecently){ splashSound(0.7); cam.shake = Math.max(cam.shake, 0.18); slam.divedRecently = 1.2; }
+  }
+  if (slam.divedRecently) slam.divedRecently = Math.max(0, slam.divedRecently - dt);
+  function sx0(){ const l = Math.hypot(R[0], R[6]) || 1; return R[0]/l; }
+  function sz0(){ const l = Math.hypot(R[0], R[6]) || 1; return R[6]/l; }
+}
+const _nd = new Float64Array(7);
+// slam bookkeeping: vertical speed while airborne, handed to emitSpray on touchdown
+const slam = { pending: 0, vy: 0, air: 0, pulse: null, ring: null, divedRecently: 0 };
+function trackSlam(){
+  if (ski.airT > 0){ slam.air = ski.airT; slam.vy = ski.v[1]; }
+  else if (slam.air > 0.2){ if (-slam.vy > 2) slam.pending = -slam.vy; slam.air = 0; }
+  else slam.air = 0;
+}
+function wakeEvents(dt){
+  const ev = {};
+  if (slam.pulse){ ev.pulse = slam.pulse; slam.pulse = null; }
+  if (slam.ring){ const r = slam.ring; r.t += dt; if (r.t > 1.6) slam.ring = null;
+    else ev.ring = [r.x, r.z, 1.0 + (0.3 + 0.5*Math.min(r.V, 10)/10)*r.V*r.t*0.5 + 0.8, r.str*(1 - r.t/1.6)]; }
+  return ev;
 }
 
 /* ---------------- HUD ---------------- */
@@ -3320,7 +3388,7 @@ function frame(now){
   impactPeak = 0;
   for (let k=0;k<n;k++){ skiStep(ski, ocean, h, k*h); impactPeak = Math.max(impactPeak, ski.impact); }
   const tc2 = performance.now();
-  emitSpray(dt);
+  trackSlam(); emitSpray(dt);
   const lipTips = buildLips(cam.pos ? cam.pos[0] : ski.p[0], cam.pos ? cam.pos[2] : ski.p[2], t);
   if (cam.pos){ surfSpray(lipTips, cam.pos, dt); rockSplashes(cam.pos, dt); }
   if (DEBUG) window.__lips = lipTips.filter((_, i) => i % 4 === 0).map(tp => [tp.root.map(v => v.toFixed(1)).join('/'), tp.H.toFixed(1), tp.beta.toFixed(2), tp.shore ? 'shore' : 'main']).slice(0, 16);
@@ -3346,7 +3414,7 @@ function frame(now){
   const wetK = clamp(ski.wet/0.4, 0, 1);
   const nzW = ski.nozzleW, jetFoam = clamp(Math.max(ski.thrust,0)/SKI.thrustMax, 0, 1)*2.2*clamp((0.5 - ski.nozzleDepth)/0.5, 0, 1);
   stepWake(dt, ski.p[0], ski.p[2], [fwd[0]/fl, fwd[1]/fl], [...ski.foot, ski.speed], clamp((ski.speed-2)/14, 0, 1)*3.0*wetK,
-           [nzW[0] - fwd[0]/fl*0.9, nzW[2] - fwd[1]/fl*0.9, jetFoam, 0.4]);
+           [nzW[0] - fwd[0]/fl*0.9, nzW[2] - fwd[1]/fl*0.9, jetFoam, 0.4], wakeEvents(dt));
   if (--causticsCheck <= 0){ causticsCheck = 20; causticsOn = shallowsNear(B.pos[0], B.pos[2]); }
   if (causticsOn && (frames % gfxCausEvery) === 0) renderCaustics(SUNV);   // light patterns drift slowly: no need every frame
   updateGroundMap(B.pos[0], B.pos[2]);
@@ -3418,7 +3486,7 @@ function frame(now){
 
   ftAvg = ftAvg*0.95 + (dt*1000)*0.05; frames++;
   autoGfx(dtRaw);
-  if (DEBUG && frames%10===0) $dbg.textContent = `${(1000/ftAvg).toFixed(0)} fps · ${W}×${H} · ${GFX[gfxLevel].name}${gfxAuto?' (auto)':''}\nv ${(ski.speed*3.6).toFixed(1)} km/h  wet ${ski.wet.toFixed(2)}  vol ${ski.submerged.toFixed(3)}  rpm ${ski.rpm.toFixed(0)}  T ${ski.thrust.toFixed(0)} vent ${ski.vent.toFixed(2)} air ${ski.airT.toFixed(2)} y ${ski.p[1].toFixed(2)}\nlips ${lipCount} · cpu ms: ocean ${cpuMs.ocean.toFixed(2)} physics ${cpuMs.phys.toFixed(2)} fx+rider ${cpuMs.fx.toFixed(2)}  caustics ${causticsOn?'on':'off'}  wake ${WN}²\nspray ${spray.n}  wakeRB ${WAKE.reads||0} wakeH ${WAKE.grid ? (()=>{ let mx=0,mn=0; for (let i=0;i<WAKE.grid.length;i+=4){ const h=WAKE.grid[i]; if(h>mx)mx=h; if(h<mn)mn=h; } return mn.toFixed(2)+'..'+mx.toFixed(2); })() : '-'}  hmax ${ocean.hmax.toFixed(2)}  pos ${ski.p.map(x=>x.toFixed(1)).join(', ')}`;
+  if (DEBUG && frames%10===0) $dbg.textContent = `${(1000/ftAvg).toFixed(0)} fps · ${W}×${H} · ${GFX[gfxLevel].name}${gfxAuto?' (auto)':''}\nv ${(ski.speed*3.6).toFixed(1)} km/h  wet ${ski.wet.toFixed(2)}  vol ${ski.submerged.toFixed(3)}  rpm ${ski.rpm.toFixed(0)}  T ${ski.thrust.toFixed(0)} vent ${ski.vent.toFixed(2)} air ${ski.airT.toFixed(2)} y ${ski.p[1].toFixed(2)}\nlips ${lipCount} · cpu ms: ocean ${cpuMs.ocean.toFixed(2)} physics ${cpuMs.phys.toFixed(2)} fx+rider ${cpuMs.fx.toFixed(2)}  caustics ${causticsOn?'on':'off'}  wake ${WN}²\nspray ${spray.n}  wakeRange ${WAKE.grid ? (()=>{ let mx=-9,mn=9; for (let i=0;i<WAKE.grid.length;i+=4){ const h=WAKE.grid[i]; if(h>mx)mx=h; if(h<mn)mn=h; } return mn.toFixed(2)+'..'+mx.toFixed(2); })() : '-'}  wakeRB ${WAKE.reads||0} wakeH ${WAKE.grid ? (()=>{ let mx=0,mn=0; for (let i=0;i<WAKE.grid.length;i+=4){ const h=WAKE.grid[i]; if(h>mx)mx=h; if(h<mn)mn=h; } return mn.toFixed(2)+'..'+mx.toFixed(2); })() : '-'}  hmax ${ocean.hmax.toFixed(2)}  pos ${ski.p.map(x=>x.toFixed(1)).join(', ')}`;
   window.__frames = (window.__frames||0) + 1;
   if (Q.has('trace') && frames%4===0) console.log(`tr t=${tSim.toFixed(2)} v=${(ski.speed*3.6).toFixed(0)} y=${ski.p[1].toFixed(2)} wet=${ski.wet.toFixed(2)} vent=${ski.vent.toFixed(2)} air=${ski.airT.toFixed(2)} fy=${(ski.foot[2]/1000).toFixed(1)}k wakeH=${wakeHeight(ski.p[0], ski.p[2]).toFixed(2)} up=${ski.R[4].toFixed(2)}`);
   requestAnimationFrame(frame);
