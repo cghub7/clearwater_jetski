@@ -141,7 +141,12 @@ const smoothstep = (a,b,x) => { const t = clamp((x-a)/(b-a),0,1); return t*t*(3-
 
 /* ---------------- World: terrain (identical formula in GLSL, see TERRAIN_GLSL) ---------------- */
 // Only sines and exponentials, so the GPU (float32) and CPU (float64) agree to millimetres.
-const SEA_D = 26;                 // depth of the open bay floor (m)
+const SEA_D = 14;                 // depth of the open bay floor (m): a clear, sandy bay you can see the bottom of
+// clear-day atmosphere, shared by every shader: sky gradient and a light haze over distance
+const ATMO = {
+  zen: 'vec3(0.045, 0.16, 0.46)', hor: 'vec3(0.46, 0.60, 0.78)', skyPow: '0.5',
+  hazeK: '0.0007', hazeMax: '0.6', hazeCol: 'vec3(0.50, 0.62, 0.76)',
+};
 const ISLANDS = [ // x, z, shoreline radius, peak height
   [70,-300,40,16], [-230,-520,28,9], [260,-720,60,24], [-40,-140,5,3.0], [22,-96,3.5,2.2], [-150,-250,8,5], [150,-160,6,3.5]
 ].map(([x,z,R,H]) => { const A = H+SEA_D; return { x, z, R, H, A, R0: R/Math.sqrt(Math.log(A/SEA_D)) }; });
@@ -1359,7 +1364,7 @@ function updateGroundMap(x, z){
 // scattering = water + particles. Channels ~ 620 / 550 / 460 nm. "Mediterranean" reproduces the original look.
 const WATERS = [
   { name:'Tropical',      chl:0.05, cdom:0.004, sed:0.0 },
-  { name:'Mediterranean', chl:0.5,  cdom:0.055, sed:0.0 },
+  { name:'Mediterranean', chl:0.25, cdom:0.03,  sed:0.0 },
   { name:'Coastal',       chl:3.0,  cdom:0.20,  sed:0.15 },
   { name:'Murky',         chl:6.0,  cdom:0.45,  sed:0.6 },
 ];
@@ -1396,9 +1401,9 @@ vec3 addClouds(vec3 c, vec3 d, int oct){
 vec3 sky(vec3 d, int oct){
   float e = d.y;
   float mu = dot(d, uSun);
-  vec3 zen = vec3(0.09, 0.25, 0.62), hor = vec3(0.66, 0.78, 0.90);
-  vec3 c = mix(hor, zen, pow(clamp(e,0.,1.), 0.42));
-  c += vec3(1.0, 0.86, 0.66) * (0.22*pow(max(mu,0.),6.) + 0.30*pow(max(mu,0.),64.) + 1.6*pow(max(mu,0.),2400.));
+  vec3 zen = ${ATMO.zen}, hor = ${ATMO.hor};
+  vec3 c = mix(hor, zen, pow(clamp(e,0.,1.), ${ATMO.skyPow}));
+  c += vec3(1.0, 0.86, 0.66) * (0.12*pow(max(mu,0.),6.) + 0.22*pow(max(mu,0.),64.) + 1.6*pow(max(mu,0.),2400.));
   c = addClouds(c, d, oct);
   if (e > 0.095) return c;                                  // the distant headland never rises above ~5 degrees
   float a = atan(d.z, d.x);
@@ -1412,7 +1417,7 @@ vec3 sky(vec3 d, int oct){
   float cliff = smoothstep(0.42, 0.18, u + 0.25*(tex-0.5)) * smoothstep(0.35, 0.75, vnoise(vec2(a*18.0, 1.0)));
   vec3 land = mix(pine, rock, cliff);
   land *= mix(1.0, 0.45, back);
-  land = mix(land, hor*0.92, 0.38 + 0.25*back);
+  land = mix(land, hor*0.95, 0.24 + 0.22*back);
   float w = fwidth(e)*1.2 + 2e-4;
   c = mix(c, land, smoothstep(r+w, r-w, e) * step(-0.3, e));
   return c;
@@ -1513,10 +1518,10 @@ float shipShadow(vec3 P){
 }
 // hazy air: same curve for water, land and meshes
 vec3 haze(vec3 col, float dist, vec3 dir){
-  float hz = 1.0 - exp(-dist*0.0016);
+  float hz = 1.0 - exp(-dist*${ATMO.hazeK});
   float muh = max(dot(normalize(vec3(dir.x,0.0,dir.z)+1e-5), uSun), 0.0);
-  vec3 hazeC = vec3(0.60, 0.71, 0.82) + vec3(1.0,0.86,0.66)*(0.22*pow(muh,6.0)+0.3*pow(muh,64.0));
-  return mix(col, hazeC*0.95, hz*0.85);
+  vec3 hazeC = ${ATMO.hazeCol} + vec3(1.0,0.86,0.66)*(0.12*pow(muh,6.0)+0.2*pow(muh,64.0));
+  return mix(col, hazeC, hz*${ATMO.hazeMax});
 }
 
 // ---- ray marching ----
@@ -1599,8 +1604,10 @@ ${ISLANDS.map(I => `  slab(ro, rd, vec2(${I.x.toFixed(1)},${I.z.toFixed(1)}), ${
 
 // cheap land in reflections: a short march on the baked terrain and simple materials (sand, pines, limestone)
 uniform float uRefl;
-vec3 landReflect(vec3 ro, vec3 rd, float tBase, out bool hit){
-  hit = false;
+// cov: soft coverage from the ray's closest approach to the land (like a soft shadow), so the reflection's edge
+// doesn't alias into speckles on the wave backs
+vec3 landReflect(vec3 ro, vec3 rd, float tBase, out float cov){
+  cov = 0.0; bool hit = false; float occ = 1.0, tc = 0.0;
   vec2 iv = vec2(1e9, -1e9);
   if (ro.z > 4.0) iv = vec2(0.0, 2500.0); else if (rd.z > 1e-4) iv = vec2((4.0 - ro.z)/rd.z, 2500.0);
 ${ISLANDS.map(I => `  slab(ro, rd, vec2(${I.x.toFixed(1)},${I.z.toFixed(1)}), ${(I.R*1.35+3).toFixed(1)}, ${(I.H+1).toFixed(1)}, iv);`).join('\n')}
@@ -1610,10 +1617,13 @@ ${ISLANDS.map(I => `  slab(ro, rd, vec2(${I.x.toFixed(1)},${I.z.toFixed(1)}), ${
     if (t > iv.y) break;
     vec3 p = ro + rd*t; float d = p.y - groundMarch(p.xz, t);
     if (d < 0.0){ hit = true; break; }
+    float o = d/(0.06*t); if (o < occ){ occ = o; tc = t; }
     if (p.y > 45.0) break;
     t += clamp(d*kx*0.9, 0.1 + 0.03*t, 80.0);
   }
-  if (!hit) return vec3(0);
+  cov = hit ? 1.0 : 1.0 - smoothstep(0.0, 1.0, occ);
+  if (cov <= 0.0) return vec3(0);
+  if (!hit) t = tc;
   vec3 P = ro + rd*t;
   float e = 0.8 + 0.01*t;
   vec3 n = normalize(vec3(groundMarch(P.xz - vec2(e,0), t) - groundMarch(P.xz + vec2(e,0), t), 2.0*e,
@@ -1779,7 +1789,11 @@ void main(){
 
     vec3 rr = reflect(wd, n); rr.y = abs(rr.y);
     vec3 refl = sky(rr, 2) * 1.25;
-    if (uRefl > 0.5 && F > 0.03 && rr.y < 0.3){ bool rh; vec3 lc = landReflect(P + vec3(0.0, 0.05, 0.0), rr, tw, rh); if (rh) refl = lc; }
+    if (uRefl > 0.5 && F > 0.03 && rr.y < 0.3){
+      // with distance, small wave facets average out: look up the land along a flatter, filtered normal
+      vec3 rl = reflect(wd, normalize(mix(n, vec3(0,1,0), clamp(0.45 + tw/80.0, 0.0, 0.85)))); rl.y = abs(rl.y);
+      float cv; vec3 lc = landReflect(P + vec3(0.0, 0.05, 0.0), rl, tw, cv); refl = mix(refl, lc, cv);
+    }
 
     float a2 = 0.00012 + 1.2*var;
     vec3 h = normalize(v + uSun);
@@ -1799,7 +1813,8 @@ void main(){
     float s = depthHere/max(-tr.y, 0.05);
     vec3 under = vec3(0);
     float floorVis = smoothstep(0.15, 0.4, -tr.y);                   // rays skimming through a steep face never see the bed
-    if (depthHere < 22.0 && floorVis > 0.0){
+    vec3 SIG_D = SIG_A + 0.25*SIG_S;
+    if (floorVis > 0.0){
       float fy = -floorDepth(P.xz);
       s = (fy - P.y)/tr.y; vec3 FP = P + tr*s;
       for (int i=0;i<2;i++){ fy = -floorDepth(FP.xz); s = (fy - P.y)/tr.y; FP = P + tr*s; }
@@ -1812,7 +1827,7 @@ void main(){
         if (coarse > 0.0){ vec3 pc = pebbles(FP.xz.yx*vec2(-1.0,1.0) + 5.3, 1.7, hgt2); alb = mix(alb, pc, coarse); hgt = mix(hgt, hgt2, coarse); }
       }
       float zone = fbm2(FP.xz*0.16 + 3.0) + 0.10*(vnoise(FP.xz*2.5)-0.5);
-      float sandM = smoothstep(hgt + 0.02, hgt + 0.16, (zone - 0.46)*1.6 + 0.35*smoothstep(4.0, 14.0, -FP.y) + 1.4*nearBeach);
+      float sandM = smoothstep(hgt + 0.02, hgt + 0.16, (zone - 0.46)*1.6 + 0.9*smoothstep(3.0, 9.0, -FP.y) + 1.4*nearBeach);
       float marks = 0.5 + 0.5*sin(dot(FP.xz, vec2(0.93, 0.37))*16.0 + 3.0*vnoise(FP.xz*0.8));
       vec3 sand = mix(vec3(0.60, 0.55, 0.44), vec3(0.72, 0.62, 0.46), nearBeach) * (0.82 + 0.22*vnoise(FP.xz*40.0) + 0.10*marks);
       sand = sand*sand*1.4;
@@ -1821,14 +1836,14 @@ void main(){
       float big = vnoise(FP.xz*0.45) * 0.65 + vnoise(FP.xz*1.3+3.1) * 0.35;
       float weed = smoothstep(0.55, 0.85, vnoise(FP.xz*0.32 + 11.0)) * (1.0 - nearBeach*0.8);
       alb *= mix(0.62, 1.22, big);
-      alb = mix(alb, alb*vec3(0.55, 0.62, 0.40), weed*0.7); alb = mix(vec3(0.30,0.29,0.27), pow(alb, vec3(1.2)), 0.72) * 0.6;
-      float dF = max(P.y - FP.y, 0.0);
+      alb = mix(alb, alb*vec3(0.55, 0.62, 0.40), weed*0.7); float dF = max(P.y - FP.y, 0.0);
+      alb = mix(vec3(0.30,0.29,0.27), pow(alb, vec3(1.2)), 0.72) * mix(0.6, 1.0, smoothstep(2.0, 10.0, dF));   // clean sand keeps its albedo out in the bay
       vec2 cuv = (FP.xz - uCausShift + sunT.xz/(-sunT.y)*(hgt-0.35)*0.05)/uL;
       vec3 caus = mix(vec3(1.0), texture(uCaus, cuv, 1.0).rgb, exp(-dF*0.06));
       float ao = mix(0.55, 1.0, smoothstep(0.08, 0.42, hgt));
-      vec3 Esun = SUN * Ts * exp(-SIG_T*dF/(-sunT.y)) * caus * (-sunT.y) * mix(0.75, 1.0, ao) * shipShadow(FP);
+      vec3 Esun = SUN * Ts * exp(-SIG_D*dF/(-sunT.y)) * caus * (-sunT.y) * mix(0.75, 1.0, ao) * shipShadow(FP);
       vec3 Esky = skyIrr * exp(-(SIG_A + 0.4*SIG_S)*dF*1.25) * ao;
-      under = alb/PI * (Esun + Esky) * exp(-SIG_T*s) * floorVis;
+      under = alb/PI * (Esun + Esky) * exp(-SIG_D*s) * floorVis;
     }
     // single scattering along the refracted path (closed form, valid shallow to deep)
     float cosS = dot(sunT, -tr);
@@ -1836,7 +1851,7 @@ void main(){
     vec3 k1 = SIG_T*(1.0 + (-tr.y)/(-sunT.y));
     vec3 k2 = SIG_T + SIG_A*1.2*(-tr.y);
     vec3 Lin = SIG_S*SUN*Ts*(ph+0.02)*(1.0-exp(-k1*s))/k1 * shade + SIG_S*skyIrr/(4.0*PI)*(1.0-exp(-k2*s))/k2;
-    under += Lin * 3.2;
+    under += Lin * 2.4;
     // suspended specks in shallow water
     if (depthHere < 6.0) for (int k=0;k<3;k++){
       float dz = 0.22 + 0.38*float(k);
@@ -1901,8 +1916,8 @@ float riderShadow(vec3 P){ if (uShOn < 0.5) return 1.0; vec3 o = uShM*(P - uShC)
 const vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0;
 const float PI = 3.14159265359;
 vec3 skyLite(vec3 d){
-  vec3 c = mix(vec3(0.66, 0.78, 0.90), vec3(0.11, 0.27, 0.62), pow(clamp(d.y,0.,1.), 0.42));
-  float mu = max(dot(d, uSun), 0.0); c += vec3(1.0,0.86,0.66)*(0.22*pow(mu,6.) + 0.3*pow(mu,64.));
+  vec3 c = mix(${ATMO.hor}, ${ATMO.zen}, pow(clamp(d.y,0.,1.), ${ATMO.skyPow}));
+  float mu = max(dot(d, uSun), 0.0); c += vec3(1.0,0.86,0.66)*(0.12*pow(mu,6.) + 0.22*pow(mu,64.));
   return d.y < 0.0 ? mix(vec3(0.05, 0.16, 0.18), c, exp(d.y*8.0)) : c;   // sea below the horizon
 }
 void main(){
@@ -1921,8 +1936,8 @@ void main(){
   float Fe = 0.04 + 0.96*pow(1.0 - nv, 5.0);
   L += skyLite(reflect(-v, n)) * Fe * gloss * 1.2;
   float dist = length(uCam - vP);
-  float hz = 1.0 - exp(-dist*0.0016);
-  L = mix(L, vec3(0.60, 0.71, 0.82)*0.95, hz*0.85);
+  float hz = 1.0 - exp(-dist*${ATMO.hazeK});
+  L = mix(L, ${ATMO.hazeCol}, hz*${ATMO.hazeMax});
   o = vec4(max(L,0.0), 1.0);
 }`, 'mesh');
 
@@ -2413,10 +2428,10 @@ void main(){
   foam += smoothstep(0.82, 1.15, stage + 0.12*(streak - 0.75));
   vec3 fcol = vec3(0.92, 0.95, 0.95)/PI*(SUN*(0.4 + 0.6*max(dot(n, uSun), 0.0)) + skyIrr*1.4)*1.15;
   col = mix(col, fcol, clamp(foam, 0.0, 0.96));
-  float dist = length(uCam - vP), hz = 1.0 - exp(-dist*0.0016);
+  float dist = length(uCam - vP), hz = 1.0 - exp(-dist*${ATMO.hazeK});
   float muh = max(dot(normalize(vec3(-v.x, 0.0, -v.z) + 1e-5), uSun), 0.0);
-  vec3 hazeC = vec3(0.60, 0.71, 0.82) + vec3(1.0,0.86,0.66)*(0.22*pow(muh,6.0) + 0.3*pow(muh,64.0));
-  col = mix(col, hazeC*0.95, hz*0.85);
+  vec3 hazeC = ${ATMO.hazeCol} + vec3(1.0,0.86,0.66)*(0.12*pow(muh,6.0) + 0.2*pow(muh,64.0));
+  col = mix(col, hazeC, hz*${ATMO.hazeMax});
   o = vec4(max(col, 0.0), 1.0);
 }`, 'lip');
 const lipBuf = makeGeoBuffer(true);
@@ -2878,12 +2893,12 @@ function post(t){
 
 
 /* ---------------- Game state ---------------- */
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 document.getElementById('ver').textContent = 'v' + VERSION;
 const SUN_EL = 31*Math.PI/180, SUN_AZ = 6*Math.PI/180;
 const SUNV = [Math.sin(SUN_AZ)*Math.cos(SUN_EL), Math.sin(SUN_EL), -Math.cos(SUN_AZ)*Math.cos(SUN_EL)];
 // water type: ?water=0..3, else the last one used
-let waterIdx = 1;
+let waterIdx = 0;                                           // Tropical: the clearest water
 { let w = Q.has('water') ? Q.get('water') : null; if (w === null){ try { w = localStorage.getItem('cwj.water'); } catch(e){} } if (w !== null && WATERS[+w]) waterIdx = +w; }
 let waterOpt = waterOptics(WATERS[waterIdx]);
 function setWater(i, say){
@@ -3451,7 +3466,7 @@ function frame(now){
   gl.useProgram(pMain.p);
   bindT(0,surfRT.t); bindT(1,causRT.t); bindT(2,pebTex); bindT(3,ripN.t); bindT(4,casTex[0]); bindT(5,casTex[1]); bindT(6,groundRT.t); bindT(7,surfTex); bindT(8,casTex2[0]); bindT(9,casTex2[1]); bindT(10,foamTexRT.t);
   const u = pMain.u;
-  gl.uniform1i(u.uSurf,0); gl.uniform1i(u.uCaus,1); gl.uniform1i(u.uPeb,2); gl.uniform1i(u.uRip,3); gl.uniform1i(u.uC0,4); gl.uniform1i(u.uC1,5); gl.uniform1i(u.uGround,6); gl.uniform1i(u.uSurfTab,7); gl.uniform1i(u.uD0,8); gl.uniform1i(u.uD1,9); gl.uniform1i(u.uFoamTex,10); gl.uniform3fv(u.uSigA, waterOpt.a); gl.uniform3fv(u.uSigS, waterOpt.b); gl.uniform1f(u.uRefl, gfxRefl ? 1 : 0); gl.uniform2f(u.uGC, GMAP.cx, GMAP.cz);
+  gl.uniform1i(u.uSurf,0); gl.uniform1i(u.uCaus,1); gl.uniform1i(u.uPeb,2); gl.uniform1i(u.uRip,3); gl.uniform1i(u.uC0,4); gl.uniform1i(u.uC1,5); gl.uniform1i(u.uGround,6); gl.uniform1i(u.uSurfTab,7); gl.uniform1i(u.uD0,8); gl.uniform1i(u.uD1,9); gl.uniform1i(u.uFoamTex,10); gl.uniform3fv(u.uSigA, waterOpt.a); gl.uniform3fv(u.uSigS, waterOpt.b); gl.uniform1f(u.uRefl, gfxRefl && !Q.has("norefl") ? 1 : 0); gl.uniform2f(u.uGC, GMAP.cx, GMAP.cz);
   gl.uniform1f(u.uSurfA, ocean.surf*(+(Q.get('surfx')||1))); gl.uniform1f(u.uSurfT, ocean.t);
   gl.uniform3fv(u.uCam, B.pos); gl.uniform3fv(u.uR, B.r); gl.uniform3fv(u.uU, B.u); gl.uniform3fv(u.uF, B.f); gl.uniform3fv(u.uSun, SUNV);
   gl.uniform1f(u.uTanF, tanF); gl.uniform1f(u.uAspect, asp); gl.uniform1f(u.uL, L); gl.uniform1f(u.uTime, t);
