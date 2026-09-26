@@ -59,11 +59,11 @@
   #craft button small { display:block; opacity:.65; margin-top:3px; font-size:11.5px; }
   #craft button.on { border-color:#b8f25a; background:rgba(184,242,90,.14); }
   #craft button:hover { background:rgba(255,255,255,.12); }
-  #water { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:-4px 0 14px; font-size:12px; }
-  #water span { opacity:.62; margin-right:4px; }
-  #water button { font:inherit; font-size:12px; color:var(--ink); padding:5px 10px; border-radius:999px; border:1px solid rgba(255,255,255,.18);
+  #water, #scene { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:-4px 0 14px; font-size:12px; }
+  #water span, #scene span { opacity:.62; margin-right:4px; }
+  #water button, #scene button { font:inherit; font-size:12px; color:var(--ink); padding:5px 10px; border-radius:999px; border:1px solid rgba(255,255,255,.18);
     background:rgba(255,255,255,.06); cursor:pointer; -webkit-tap-highlight-color:transparent; }
-  #water button.on { border-color:#b8f25a; background:rgba(184,242,90,.14); }
+  #water button.on, #scene button.on { border-color:#b8f25a; background:rgba(184,242,90,.14); }
   #go { margin-top:16px; text-align:center; font-weight:600; padding:10px; border-radius:999px; background:rgba(255,255,255,.16); }
   #card .cr { margin-top:12px; font-size:11px; opacity:.55; text-align:center; }
   #card .cr a { color:inherit; }
@@ -71,7 +71,7 @@
     font:700 18px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; padding:16px 26px; border-radius:999px; cursor:pointer;
     background:rgba(10,30,30,.55); box-shadow:0 0 0 2px rgba(184,242,90,.7); -webkit-tap-highlight-color:transparent; touch-action:manipulation; }
   #bFlip.show { display:block; }
-  #mbtns { position:fixed; top:calc(14px + env(safe-area-inset-top,0px)); right:calc(14px + env(safe-area-inset-right,0px)); z-index:7; display:flex; gap:8px; }
+  #mbtns { position:fixed; top:calc(14px + env(safe-area-inset-top,0px)); right:calc(14px + env(safe-area-inset-right,0px)); z-index:7; display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; max-width:calc(100vw - 28px); }
   #mbtns .tonly { display:none; } body.touch #mbtns .tonly { display:block; }
   body.touch #mbtns { right:calc(10px + env(safe-area-inset-right,0px)); gap:6px; }
   body.touch #mbtns button { font-size:13px; padding:9px 12px; white-space:nowrap; }
@@ -101,7 +101,7 @@
 <div id="air"></div>
 <div id="msg" class="glass"></div>
 <button id="bFlip" class="glass">↻ Flip upright</button>
-<div id="mbtns"><button id="bSea" class="glass tonly">Sea: Light chop</button><button id="bCam" class="glass tonly">Camera</button><button id="bGfx" class="glass">Graphics: High</button></div>
+<div id="mbtns"><button id="bSea" class="glass tonly">Sea: Light chop</button><button id="bCam" class="glass tonly">Camera</button><button id="bScene" class="glass tonly">Day</button><button id="bGfx" class="glass">Graphics: High</button></div>
 <div id="touch"><div class="pad l"></div><div class="pad r"></div></div>
 <div id="start">
   <div id="card" class="glass">
@@ -112,13 +112,14 @@
       <button data-craft="sit"><b>Sit-down cruiser</b><small>300 hp · seated, faster, more stable</small></button>
     </div>
     <div id="water"><span>Water</span><button data-w="0">Tropical</button><button data-w="1">Mediterranean</button><button data-w="2">Coastal</button><button data-w="3">Murky</button></div>
+    <div id="scene" class="chips"><span>Time</span><button data-s="0">Day</button><button data-s="1">Full moon</button><button data-s="2">Retro dusk</button></div>
     <table>
       <tr><td><kbd>W</kbd> <kbd>S</kbd> / <kbd>↑</kbd> <kbd>↓</kbd></td><td>Throttle / brake &amp; reverse</td></tr>
       <tr><td><kbd>A</kbd> <kbd>D</kbd> / <kbd>←</kbd> <kbd>→</kbd></td><td>Steer (the jet only steers under throttle)</td></tr>
       <tr><td><kbd>Q</kbd> <kbd>E</kbd></td><td>Trim nose down / up; lean in the air</td></tr>
       <tr><td><kbd>Shift</kbd></td><td>Lean in hard for tighter turns</td></tr>
       <tr><td><kbd>C</kbd></td><td>Camera: chase / first person</td></tr>
-      <tr><td><kbd>G</kbd> · <kbd>V</kbd></td><td>Graphics preset · water type</td></tr>
+      <tr><td><kbd>G</kbd> · <kbd>V</kbd> · <kbd>T</kbd></td><td>Graphics preset · water type · time of day</td></tr>
       <tr><td><kbd>1</kbd>–<kbd>5</kbd></td><td>Sea state: glassy → surf (Sea button on mobile)</td></tr>
       <tr><td><kbd>R</kbd> · <kbd>M</kbd> · <kbd>H</kbd></td><td>Reset · mute · this help</td></tr>
       <tr><td>Mouse drag / wheel</td><td>Look around / zoom</td></tr>
@@ -142,11 +143,25 @@ const smoothstep = (a,b,x) => { const t = clamp((x-a)/(b-a),0,1); return t*t*(3-
 /* ---------------- World: terrain (identical formula in GLSL, see TERRAIN_GLSL) ---------------- */
 // Only sines and exponentials, so the GPU (float32) and CPU (float64) agree to millimetres.
 const SEA_D = 14;                 // depth of the open bay floor (m): a clear, sandy bay you can see the bottom of
-// clear-day atmosphere, shared by every shader: sky gradient and a light haze over distance
-const ATMO = {
-  zen: 'vec3(0.030, 0.12, 0.40)', hor: 'vec3(0.34, 0.49, 0.70)', skyPow: '0.55',
-  hazeK: '0.00045', hazeMax: '0.45', hazeCol: 'vec3(0.40, 0.53, 0.71)',
-};
+// scenes: the light, sky and atmosphere, shared by every shader through the LIGHT_GLSL uniforms. The key light is the
+// sun, or the moon at night; disc 0 = the sun (drawn sharp), 1 = the full moon, 2 = a big retro sun. exp/sat go to
+// the final image (the eye adapts: a moonlit scene is exposed brighter and looks less saturated)
+const SCENES = [
+  { name:'Day', el:31, az:6, sun:[1.0, 0.90, 0.74], sunI:6.0, skyI:[0.4285, 0.4838, 0.5391],
+    zen:[0.030, 0.12, 0.40], hor:[0.34, 0.49, 0.70], skyPow:0.55, hazeK:0.00045, hazeMax:0.45, haze:[0.40, 0.53, 0.71],
+    glow:[1.0, 0.86, 0.66], glowK:1.0, cloudD:[0.58, 0.64, 0.74], cloudL:[1.10, 1.06, 1.00], stars:0, disc:0, discR:0, discI:0, exp:1.0, sat:1.0 },
+  { name:'Full moon', el:15, az:-8, sun:[0.62, 0.72, 1.0], sunI:0.85, skyI:[0.030, 0.045, 0.090],
+    zen:[0.0025, 0.005, 0.020], hor:[0.020, 0.034, 0.075], skyPow:0.5, hazeK:0.0005, hazeMax:0.5, haze:[0.020, 0.032, 0.065],
+    glow:[0.78, 0.84, 1.0], glowK:0.35, cloudD:[0.020, 0.028, 0.045], cloudL:[0.22, 0.25, 0.32], stars:1, disc:1, discR:0.034, discI:2.2, exp:2.6, sat:0.8 },
+  { name:'Retro dusk', el:4.5, az:10, sun:[1.0, 0.55, 0.65], sunI:2.6, skyI:[0.28, 0.21, 0.50],
+    zen:[0.060, 0.025, 0.22], hor:[0.74, 0.34, 0.74], skyPow:0.32, hazeK:0.0006, hazeMax:0.55, haze:[0.50, 0.30, 0.62],
+    glow:[1.0, 0.50, 0.55], glowK:1.0, cloudD:[0.18, 0.10, 0.34], cloudL:[1.0, 0.50, 0.72], stars:0.35, disc:2, discR:0.07, discI:7.0, exp:1.15, sat:1.08 },
+];
+const LIGHT_GLSL = `
+uniform vec3 uSunC, uSkyI, uZen, uHor, uHazeC, uGlowC, uCloudD, uCloudL; uniform vec4 uAtmo, uCel;   // uAtmo: haze k, haze max, sky exponent, glow; uCel: stars, disc, radius, radiance
+#define SUN uSunC
+#define AMB (uSkyI/vec3(0.4285, 0.4838, 0.5391))
+`;
 const ISLANDS = [ // x, z, shoreline radius, peak height
   [70,-300,40,16], [-230,-520,28,9], [260,-720,60,24], [-40,-140,5,3.0], [22,-96,3.5,2.2], [-150,-250,8,5], [150,-160,6,3.5]
 ].map(([x,z,R,H]) => { const A = H+SEA_D; return { x, z, R, H, A, R0: R/Math.sqrt(Math.log(A/SEA_D)) }; });
@@ -1420,7 +1435,7 @@ vec3 addClouds(vec3 c, vec3 d, int oct){
   float n2 = cloudFbm(p + uSun.xz*0.14, oct);
   float lit = clamp(0.62 + (n - n2)*2.8, 0.18, 1.15);
   float mu = max(dot(d, uSun), 0.0);
-  vec3 cc = mix(vec3(0.58, 0.64, 0.74), vec3(1.10, 1.06, 1.00), lit) + vec3(1.0, 0.9, 0.75)*0.8*pow(mu, 10.0)*(1.0 - 0.6*cov);
+  vec3 cc = mix(uCloudD, uCloudL, lit) + uGlowC*0.8*uAtmo.w*pow(mu, 10.0)*(1.0 - 0.6*cov);
   return mix(c, cc, cov*smoothstep(0.01, 0.17, d.y)*0.93);
 }
 float ridgeMask(vec3 d){
@@ -1429,12 +1444,40 @@ float ridgeMask(vec3 d){
   float r = ridge(a) + 0.0045*(vnoise(vec2(a*260.0, 0.0))-0.5);
   return smoothstep(r + 0.004, r - 0.004, d.y);
 }
+// stars: one per cell of a sky grid at most, twinkling
+vec3 stars(vec3 d){
+  if (d.y <= 0.0) return vec3(0);
+  vec2 sp = vec2(atan(d.z, d.x), asin(clamp(d.y, 0.0, 1.0)))*110.0, cell = floor(sp), f = fract(sp);
+  float h = hash12(cell);
+  if (h < 0.93) return vec3(0);
+  vec2 off = vec2(hash12(cell + 17.3), hash12(cell + 41.9))*0.6 + 0.2;
+  float b = pow((h - 0.93)/0.07, 3.0)*(0.75 + 0.25*sin(uTime*(2.0 + 5.0*h) + h*40.0));
+  vec3 tint = mix(vec3(0.75, 0.85, 1.0), vec3(1.0, 0.9, 0.75), hash12(cell + 5.1));
+  return tint*smoothstep(0.22, 0.0, length(f - off))*b*uCel.x*2.5*smoothstep(0.0, 0.2, d.y);
+}
+// the full moon (maria, a slightly darker limb) or a big retro sun (a gradient disc with bands cut through its lower half)
+vec3 disc(vec3 d){
+  float r = uCel.z;
+  if (dot(d, uSun) < cos(r*1.05)) return vec3(0);
+  vec3 t1 = normalize(cross(uSun, vec3(0,1,0))), t2 = cross(t1, uSun);
+  vec2 q = vec2(dot(d, t1), dot(d, t2))/r;
+  float rr = length(q), edge = smoothstep(1.0, 0.96, rr);
+  if (uCel.y < 1.5){
+    float alb = 1.0 - 0.38*smoothstep(0.42, 0.62, fbm2(q*1.7 + 4.0)) - 0.12*smoothstep(0.5, 0.8, fbm2(q*6.0 + 1.0));
+    return uGlowC*uCel.w*alb*(1.0 - 0.18*rr*rr)*edge;
+  }
+  float below = 0.15 - q.y, ph = fract(below/0.17), gap = 0.12 + 0.45*below/1.15, aa = fwidth(q.y)/0.17 + 0.01;
+  float cut = below > 0.0 ? smoothstep(gap - aa, gap + aa, ph) : 1.0;
+  return mix(vec3(1.0, 0.25, 0.55), vec3(1.0, 0.86, 0.36), clamp(q.y*0.5 + 0.55, 0.0, 1.0))*uCel.w*edge*cut;
+}
 vec3 sky(vec3 d, int oct){
   float e = d.y;
   float mu = dot(d, uSun);
-  vec3 zen = ${ATMO.zen}, hor = ${ATMO.hor};
-  vec3 c = mix(hor, zen, pow(clamp(e,0.,1.), ${ATMO.skyPow}));
-  c += vec3(1.0, 0.86, 0.66) * (0.06*pow(max(mu,0.),6.) + 0.15*pow(max(mu,0.),64.) + 1.6*pow(max(mu,0.),2400.));
+  vec3 zen = uZen, hor = uHor;
+  vec3 c = mix(hor, zen, pow(clamp(e,0.,1.), uAtmo.z));
+  c += uGlowC * (uAtmo.w*(0.06*pow(max(mu,0.),6.) + 0.15*pow(max(mu,0.),64.)) + (uCel.y < 0.5 ? 1.6*pow(max(mu,0.),2400.) : 0.0));
+  if (uCel.x > 0.0) c += stars(d);
+  if (uCel.y > 0.5) c += disc(d);
   c = addClouds(c, d, oct);
   if (e > 0.095) return c;                                  // the distant headland never rises above ~5 degrees
   float a = atan(d.z, d.x);
@@ -1447,7 +1490,7 @@ vec3 sky(vec3 d, int oct){
   vec3 rock = vec3(0.30, 0.28, 0.23) * (0.55 + 0.7*fbm2(q*1.7+5.0));
   float cliff = smoothstep(0.42, 0.18, u + 0.25*(tex-0.5)) * smoothstep(0.35, 0.75, vnoise(vec2(a*18.0, 1.0)));
   vec3 land = mix(pine, rock, cliff);
-  land *= mix(1.0, 0.45, back);
+  land *= mix(1.0, 0.45, back) * (AMB*0.6 + 0.4*uSunC/6.0);
   land = mix(land, hor*0.95, 0.24 + 0.22*back);
   float w = fwidth(e)*1.2 + 2e-4;
   c = mix(c, land, smoothstep(r+w, r-w, e) * step(-0.3, e));
@@ -1469,7 +1512,7 @@ uniform vec3 uSigA, uSigS;
 #define SIG_S uSigS
 #define SIG_T (uSigA + uSigS)
 
-const vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0;
+${LIGHT_GLSL}
 const float PI = 3.14159265359;
 const float H0 = ${(0.5/ON).toFixed(6)};
 ${TERRAIN_GLSL}
@@ -1549,10 +1592,10 @@ float shipShadow(vec3 P){
 }
 // hazy air: same curve for water, land and meshes
 vec3 haze(vec3 col, float dist, vec3 dir){
-  float hz = 1.0 - exp(-dist*${ATMO.hazeK});
+  float hz = 1.0 - exp(-dist*uAtmo.x);
   float muh = max(dot(normalize(vec3(dir.x,0.0,dir.z)+1e-5), uSun), 0.0);
-  vec3 hazeC = ${ATMO.hazeCol} + vec3(1.0,0.86,0.66)*(0.06*pow(muh,6.0)+0.14*pow(muh,64.0));
-  return mix(col, hazeC, hz*${ATMO.hazeMax});
+  vec3 hazeC = uHazeC + uGlowC*uAtmo.w*(0.06*pow(muh,6.0)+0.14*pow(muh,64.0));
+  return mix(col, hazeC, hz*uAtmo.y);
 }
 
 // ---- ray marching ----
@@ -1666,7 +1709,7 @@ ${ISLANDS.map(I => `  slab(ro, rd, vec2(${I.x.toFixed(1)},${I.z.toFixed(1)}), ${
   vec3 veg = vec3(0.05, 0.075, 0.035), rock = vec3(0.50, 0.46, 0.40), sand = vec3(0.55, 0.43, 0.27);
   vec3 alb = dm > -3.0 ? mix(sand, veg, smoothstep(40.0, 60.0, dm)) : mix(veg, rock, max(smoothstep(0.35, 0.55, slope), smoothstep(3.0, 1.0, P.y)));
   alb *= mix(1.0, 0.5, smoothstep(0.5, 0.1, P.y));
-  vec3 skyIrr = vec3(0.62, 0.70, 0.78) * PI * 0.22;
+  vec3 skyIrr = uSkyI;
   vec3 L = alb/PI*(SUN*max(dot(n, uSun), 0.0) + skyIrr*(0.55 + 0.45*n.y));
   return haze(L, tBase + t, rd);
 }
@@ -1682,7 +1725,7 @@ vec3 shadeLand(vec3 P, vec3 rd, float t){
   bool mainland = d > -3.0;
   float tx = fbm2(P.xz*0.35);
   float near = exp(-t*0.03);
-  vec3 skyIrr = vec3(0.62, 0.70, 0.78) * PI * 0.22;
+  vec3 skyIrr = uSkyI;
 
   // shared materials: pine / scrub canopy in clumps with dark gaps and sunlit crowns; pale limestone
   float cl2 = vnoise(P.xz*1.7 + 4.0);
@@ -1744,7 +1787,7 @@ vec3 shadeLand(vec3 P, vec3 rd, float t){
   for (int i=0;i<16;i++){ vec3 p = P + uSun*st; float dd = p.y - groundMarch(p.xz, t + st); sh = min(sh, clamp(6.0*dd/st, 0.0, 1.0)); st += max(0.4, st*0.35); if (st > 120.0 || sh < 0.02) break; }
   sh *= shipShadow(P);
   float ndl = max(dot(n, uSun), 0.0);
-  vec3 L = alb/PI * (SUN*ndl*sh + skyIrr*(0.55 + 0.45*n.y) + vec3(0.25,0.3,0.3)*0.25);
+  vec3 L = alb/PI * (SUN*ndl*sh + skyIrr*(0.55 + 0.45*n.y) + vec3(0.25,0.3,0.3)*0.25*AMB);
   // wet sand is a dull mirror; the swash film a bright one
   vec3 v = -rd, hv = normalize(uSun + v);
   float nv = max(dot(n, v), 0.0), F = 0.02 + 0.98*pow(1.0 - nv, 5.0);
@@ -1763,7 +1806,7 @@ vec3 shadeLand(vec3 P, vec3 rd, float t){
   return haze(L, t, rd);
 }
 
-vec3 skyDir(vec3 rd){ return sky(rd, 5) + SUN*18.0*smoothstep(0.99996, 0.999985, dot(rd, uSun)); }
+vec3 skyDir(vec3 rd){ return sky(rd, 5) + (uCel.y < 0.5 ? SUN*18.0*smoothstep(0.99996, 0.999985, dot(rd, uSun)) : vec3(0)); }
 
 void main(){
   vec2 ndc = vUv*2.0-1.0;
@@ -1851,7 +1894,7 @@ void main(){
     float depthHere = max(P.y - g, 0.0);
     vec3 sunT = refract(-uSun, vec3(0,1,0), 1.0/IOR);
     float Ts = 1.0 - fresnel(uSun.y, IOR);
-    vec3 skyIrr = vec3(0.62, 0.70, 0.78) * PI * 0.22;
+    vec3 skyIrr = uSkyI;
     float s = depthHere/max(-tr.y, 0.05);
     vec3 under = vec3(0);
     float floorVis = smoothstep(0.15, 0.4, -tr.y);                   // rays skimming through a steep face never see the bed
@@ -1963,20 +2006,20 @@ uniform vec3 uCam, uSun; uniform float uWetLine;
 uniform mat3 uShM; uniform vec3 uShC; uniform float uShOn;
 float riderShadow(vec3 P){ if (uShOn < 0.5) return 1.0; vec3 o = uShM*(P - uShC), d = uShM*uSun;
   float t = max(-dot(o,d)/dot(d,d), 0.0); return mix(1.0, smoothstep(0.7, 1.2, length(o + d*t)), uShOn); }
-const vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0;
+${LIGHT_GLSL}
 const float PI = 3.14159265359;
 vec3 skyLite(vec3 d){
-  vec3 c = mix(${ATMO.hor}, ${ATMO.zen}, pow(clamp(d.y,0.,1.), ${ATMO.skyPow}));
-  float mu = max(dot(d, uSun), 0.0); c += vec3(1.0,0.86,0.66)*(0.12*pow(mu,6.) + 0.22*pow(mu,64.));
-  return d.y < 0.0 ? mix(vec3(0.05, 0.16, 0.18), c, exp(d.y*8.0)) : c;   // sea below the horizon
+  vec3 c = mix(uHor, uZen, pow(clamp(d.y,0.,1.), uAtmo.z));
+  float mu = max(dot(d, uSun), 0.0); c += uGlowC*uAtmo.w*(0.12*pow(mu,6.) + 0.22*pow(mu,64.));
+  return d.y < 0.0 ? mix(vec3(0.05, 0.16, 0.18)*AMB, c, exp(d.y*8.0)) : c;   // sea below the horizon
 }
 void main(){
   vec3 n = normalize(vN); vec3 v = normalize(uCam - vP);
   if (!gl_FrontFacing) n = -n;
   vec3 alb = vC.rgb; float gloss = vC.a;
   float ndl = max(dot(n, uSun), 0.0), sh = riderShadow(vP);
-  vec3 skyIrr = vec3(0.62, 0.70, 0.78) * PI * 0.22;
-  vec3 bounce = vec3(0.16, 0.30, 0.30) * 0.5;
+  vec3 skyIrr = uSkyI;
+  vec3 bounce = vec3(0.16, 0.30, 0.30) * 0.5 * AMB;
   vec3 L = alb/PI * (SUN*ndl*sh + skyIrr*(0.55+0.45*n.y) + bounce*(0.5-0.5*n.y));
   float r = mix(0.6, 0.06, gloss), a2 = r*r*r*r;
   vec3 h = normalize(v + uSun); float nh = max(dot(n,h),0.0), nv = max(dot(n,v), 1e-3);
@@ -1986,8 +2029,8 @@ void main(){
   float Fe = 0.04 + 0.96*pow(1.0 - nv, 5.0);
   L += skyLite(reflect(-v, n)) * Fe * gloss * 1.2;
   float dist = length(uCam - vP);
-  float hz = 1.0 - exp(-dist*${ATMO.hazeK});
-  L = mix(L, ${ATMO.hazeCol}, hz*${ATMO.hazeMax});
+  float hz = 1.0 - exp(-dist*uAtmo.x);
+  L = mix(L, uHazeC, hz*uAtmo.y);
   o = vec4(max(L,0.0), 1.0);
 }`, 'mesh');
 
@@ -2427,7 +2470,7 @@ void main(){
 precision highp float;
 in vec2 vQ; in vec4 vJ; in vec3 vP; out vec4 o;
 uniform vec3 uCam, uSun; uniform sampler2D uSplash;
-const vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0;
+${LIGHT_GLSL}
 void main(){
   float mist = vJ.z;
   // sprite from the baked splash atlas: droplet clusters (tiles 0-3) or mist puffs (4-7), randomly rotated
@@ -2444,7 +2487,7 @@ void main(){
   vec3 v = (vP - uCam)/dc;
   float mu = dot(v, uSun), g = 0.65;
   float ph = (1.0-g*g)/pow(1.0+g*g-2.0*g*mu, 1.5) * 0.08;      // droplets scatter forward: spray glows against the sun
-  vec3 c = SUN*(0.07 + ph) + vec3(0.62,0.70,0.78)*0.55;
+  vec3 c = SUN*(0.07 + ph) + uSkyI*0.796;
   c *= mix(1.0, 0.8 + 0.4*vJ.y, 0.5);
   o = vec4(c*a, a);
 }`, 'spray');
@@ -2468,7 +2511,7 @@ const pLip = prog(MESH_VS, `#version 300 es
 precision highp float;
 in vec3 vP, vN; in vec4 vC; out vec4 o;       // vC: x = 0 root .. 1 tip, y = stage (1 = impact), z = 0 outer / 1 inner, w = wave height
 uniform vec3 uCam, uSun, uSigA, uSigS; uniform float uTime; uniform sampler2D uScene; uniform vec2 uRes;
-const vec3 SUN = vec3(1.0, 0.90, 0.74) * 6.0;
+${LIGHT_GLSL}
 const float PI = 3.14159265359;
 ${SKY_GLSL}
 void main(){
@@ -2476,7 +2519,7 @@ void main(){
   vec3 v = normalize(uCam - vP); float nv = max(dot(n, v), 0.0);
   float F = 0.02 + 0.98*pow(1.0 - nv, 5.0);
   vec3 r = reflect(-v, n);
-  vec3 skyIrr = vec3(0.62, 0.70, 0.78) * PI * 0.22;
+  vec3 skyIrr = uSkyI;
   vec3 ratio = uSigS/(uSigA + uSigS);
   vec3 refl = r.y > 0.0 ? sky(r, 2)*1.25 : mix(ratio*skyIrr*0.25, sky(normalize(vec3(r.x, 0.02, r.z)), 2)*1.25, exp(r.y*6.0));
   // a sheet of clear water: what is behind shows through (bent a little), tinted by the path through the sheet,
@@ -2495,10 +2538,10 @@ void main(){
   foam += smoothstep(0.82, 1.15, stage + 0.12*(streak - 0.75));
   vec3 fcol = vec3(0.92, 0.95, 0.95)/PI*(SUN*(0.4 + 0.6*max(dot(n, uSun), 0.0)) + skyIrr*1.4)*1.15;
   col = mix(col, fcol, clamp(foam, 0.0, 0.96));
-  float dist = length(uCam - vP), hz = 1.0 - exp(-dist*${ATMO.hazeK});
+  float dist = length(uCam - vP), hz = 1.0 - exp(-dist*uAtmo.x);
   float muh = max(dot(normalize(vec3(-v.x, 0.0, -v.z) + 1e-5), uSun), 0.0);
-  vec3 hazeC = ${ATMO.hazeCol} + vec3(1.0,0.86,0.66)*(0.12*pow(muh,6.0) + 0.2*pow(muh,64.0));
-  col = mix(col, hazeC, hz*${ATMO.hazeMax});
+  vec3 hazeC = uHazeC + uGlowC*uAtmo.w*(0.12*pow(muh,6.0) + 0.2*pow(muh,64.0));
+  col = mix(col, hazeC, hz*uAtmo.y);
   o = vec4(max(col, 0.0), 1.0);
 }`, 'lip');
 const lipBuf = makeGeoBuffer(true);
@@ -2725,7 +2768,7 @@ void main(){
 const pCopy = prog(VS, HEAD+`uniform sampler2D uSrc; uniform float uK; void main(){ o = vec4(texture(uSrc,vUv).rgb*uK,1); }`, 'copy');
 const pRaw = prog(VS, HEAD+`uniform sampler2D uSrc; void main(){ o = texelFetch(uSrc, ivec2(gl_FragCoord.xy), 0); }`, 'raw');
 const pFinal = prog(VS, HEAD+`
-uniform sampler2D uHdr, uStreak, uB1, uB2; uniform float uExp, uTime, uNoPost; uniform vec2 uRes;
+uniform sampler2D uHdr, uStreak, uB1, uB2; uniform float uExp, uTime, uNoPost, uSat; uniform vec2 uRes;
 vec3 bicubic(sampler2D t, vec2 uv){
   vec2 ts = vec2(textureSize(t,0)); vec2 p = uv*ts - 0.5; vec2 f = fract(p); p = floor(p);
   vec2 w0 = f*(-0.5+f*(1.0-0.5*f)), w1 = 1.0+f*f*(-2.5+1.5*f), w2 = f*(0.5+f*(2.0-1.5*f)), w3 = f*f*(-0.5+0.5*f);
@@ -2748,7 +2791,7 @@ void main(){
   c *= vig;
   c = aces(c);
   float lum = dot(c, vec3(0.2126,0.7152,0.0722));
-  c = mix(vec3(lum), c, 1.0);
+  c = mix(vec3(lum), c, uSat);
   c = mix(c, c*vec3(0.96,1.0,1.05), 1.0 - smoothstep(0.0, 0.35, lum));
   c = pow(c, vec3(1.0/2.2));
   float g = hash(gl_FragCoord.xy + fract(uTime*7.13)*917.0) - 0.5;
@@ -2953,17 +2996,40 @@ function post(t){
   target(gfxFxaa ? ldrRT : null); gl.useProgram(pFinal.p);
   bindT(0,hdrRT.t); bindT(1,streakRT.t); bindT(2,b1.t); bindT(3,b2.t);
   gl.uniform1i(pFinal.u.uHdr,0); gl.uniform1i(pFinal.u.uStreak,1); gl.uniform1i(pFinal.u.uB1,2); gl.uniform1i(pFinal.u.uB2,3);
-  gl.uniform1f(pFinal.u.uExp, 0.63); gl.uniform1f(pFinal.u.uNoPost, Q.get('view')==='nopost'?1:(Q.get('view')==='glare'?2:0)); gl.uniform1f(pFinal.u.uTime, t); gl.uniform2f(pFinal.u.uRes, W, H);
+  gl.uniform1f(pFinal.u.uExp, 0.63*LIGHT.exp); gl.uniform1f(pFinal.u.uSat, LIGHT.sat); gl.uniform1f(pFinal.u.uNoPost, Q.get('view')==='nopost'?1:(Q.get('view')==='glare'?2:0)); gl.uniform1f(pFinal.u.uTime, t); gl.uniform2f(pFinal.u.uRes, W, H);
   fullscreen();
   if (gfxFxaa){ target(null); gl.useProgram(pFXAA.p); bindT(0, ldrRT.t); gl.uniform1i(pFXAA.u.uSrc, 0); gl.uniform2f(pFXAA.u.uInv, 1/W, 1/H); fullscreen(); }
 }
 
 
 /* ---------------- Game state ---------------- */
-const VERSION = '2.4.0';
+const VERSION = '2.5.0';
 document.getElementById('ver').textContent = 'v' + VERSION;
-const SUN_EL = 31*Math.PI/180, SUN_AZ = 6*Math.PI/180;
-const SUNV = [Math.sin(SUN_AZ)*Math.cos(SUN_EL), Math.sin(SUN_EL), -Math.cos(SUN_AZ)*Math.cos(SUN_EL)];
+// scene (day, full moon, retro dusk): ?scene=0..2, else the last one used. SUNV is the key light's direction
+const SUNV = [0, 1, 0];
+let sceneIdx = 0, LIGHT = SCENES[0];
+{ let w = Q.has('scene') ? Q.get('scene') : null; if (w === null){ try { w = localStorage.getItem('cwj.scene'); } catch(e){} } if (w !== null && SCENES[+w]) sceneIdx = +w; }
+function applyScene(i){
+  sceneIdx = i; LIGHT = SCENES[i];
+  const el = LIGHT.el*Math.PI/180, az = LIGHT.az*Math.PI/180;
+  SUNV[0] = Math.sin(az)*Math.cos(el); SUNV[1] = Math.sin(el); SUNV[2] = -Math.cos(az)*Math.cos(el);
+  LIGHT.sunC = LIGHT.sun.map(c => c*LIGHT.sunI);
+}
+applyScene(sceneIdx);
+function setScene(i, say){
+  applyScene(i);
+  try { localStorage.setItem('cwj.scene', String(i)); } catch(e){}
+  document.querySelectorAll('#scene button').forEach(b => b.classList.toggle('on', +b.dataset.s === i));
+  const $b = document.getElementById('bScene'); if ($b) $b.textContent = SCENES[i].name;
+  if (say) flash(SCENES[i].name, 1.4);
+}
+// every shader that is lit shares these
+function setLight(p){
+  const u = p.u, L = LIGHT;
+  gl.uniform3fv(u.uSunC, L.sunC); gl.uniform3fv(u.uSkyI, L.skyI); gl.uniform3fv(u.uZen, L.zen); gl.uniform3fv(u.uHor, L.hor);
+  gl.uniform3fv(u.uHazeC, L.haze); gl.uniform3fv(u.uGlowC, L.glow); gl.uniform3fv(u.uCloudD, L.cloudD); gl.uniform3fv(u.uCloudL, L.cloudL);
+  gl.uniform4f(u.uAtmo, L.hazeK, L.hazeMax, L.skyPow, L.glowK); gl.uniform4f(u.uCel, L.stars, L.disc, L.discR, L.discI);
+}
 // water type: ?water=0..3, else the last one used
 let waterIdx = 0;                                           // Tropical: the clearest water
 { let w = Q.has('water') ? Q.get('water') : null; if (w === null){ try { w = localStorage.getItem('cwj.water'); } catch(e){} } if (w !== null && WATERS[+w]) waterIdx = +w; }
@@ -3022,6 +3088,12 @@ document.querySelectorAll('#water button').forEach(b => {
   b.classList.toggle('on', +b.dataset.w === waterIdx);
   b.addEventListener('click', e => { e.stopPropagation(); setWater(+b.dataset.w, false); });   // pick water without starting
 });
+document.querySelectorAll('#scene button').forEach(b => {
+  b.classList.toggle('on', +b.dataset.s === sceneIdx);
+  b.addEventListener('click', e => { e.stopPropagation(); setScene(+b.dataset.s, false); });
+});
+{ const $b = document.getElementById('bScene'); $b.textContent = SCENES[sceneIdx].name;
+  $b.addEventListener('click', e => { e.stopPropagation(); start(); setScene((sceneIdx + 1) % SCENES.length, false); }); }
 document.querySelectorAll('#craft button').forEach(b => {
   b.classList.toggle('on', b.dataset.craft === CRAFT.id);
   b.addEventListener('click', () => selectCraft(b.dataset.craft));      // then the click reaches #start and starts
@@ -3033,6 +3105,7 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyC') cycleCam();
   if (e.code === 'KeyG') chooseGfx((gfxLevel + 1) % GFX.length);
   if (e.code === 'KeyV') setWater((waterIdx + 1) % WATERS.length, true);
+  if (e.code === 'KeyT') setScene((sceneIdx + 1) % SCENES.length, true);
   if (e.code === 'KeyR') resetSki();
   if (e.code === 'KeyM') { muted = !muted; if (audio.master) audio.master.gain.value = muted ? 0 : 0.6; flash(muted ? 'Sound off' : 'Sound on', 1.2); }
   if (e.code === 'KeyH' || e.code === 'Escape') $start.hidden = !$start.hidden;
@@ -3572,7 +3645,7 @@ function frame(now){
   const u = pMain.u;
   gl.uniform1i(u.uSurf,0); gl.uniform1i(u.uCaus,1); gl.uniform1i(u.uPeb,2); gl.uniform1i(u.uRip,3); gl.uniform1i(u.uC0,4); gl.uniform1i(u.uC1,5); gl.uniform1i(u.uGround,6); gl.uniform1i(u.uSurfTab,7); gl.uniform1i(u.uD0,8); gl.uniform1i(u.uD1,9); gl.uniform1i(u.uFoamTex,10); gl.uniform1i(u.uWFoam,11); gl.uniform3fv(u.uSigA, waterOpt.a); gl.uniform3fv(u.uSigS, waterOpt.b); gl.uniform1f(u.uRefl, Q.has("norefl") ? 0 : gfxRefl); gl.uniform2f(u.uGC, GMAP.cx, GMAP.cz);
   gl.uniform1f(u.uSurfA, ocean.surf*(+(Q.get('surfx')||1))); gl.uniform1f(u.uSurfT, ocean.t);
-  gl.uniform3fv(u.uCam, B.pos); gl.uniform3fv(u.uR, B.r); gl.uniform3fv(u.uU, B.u); gl.uniform3fv(u.uF, B.f); gl.uniform3fv(u.uSun, SUNV);
+  gl.uniform3fv(u.uCam, B.pos); gl.uniform3fv(u.uR, B.r); gl.uniform3fv(u.uU, B.u); gl.uniform3fv(u.uF, B.f); gl.uniform3fv(u.uSun, SUNV); setLight(pMain);
   gl.uniform1f(u.uTanF, tanF); gl.uniform1f(u.uAspect, asp); gl.uniform1f(u.uL, L); gl.uniform1f(u.uTime, t);
   gl.uniform1f(u.uRipSize, RSIZE); gl.uniform2fv(u.uRipCenter, ripCenter); gl.uniform2fv(u.uCausShift, causShift);
   gl.uniform1f(u.uL0, OCASC[0].L); gl.uniform1f(u.uL1, OCASC[1].L); gl.uniform1f(u.uHm, ocean.hmax + 0.5 + ocean.surf*1.6);   // bound on |water height|: cascades + wake + surf crests gl.uniform1f(u.uWhite, ocean.white);
@@ -3589,7 +3662,7 @@ function frame(now){
   gl.depthFunc(gl.LESS);
   gl.useProgram(pMesh.p);
   gl.uniformMatrix4fv(pMesh.u.uVP, false, VP); gl.uniformMatrix4fv(pMesh.u.uM, false, modelMat());
-  gl.uniform3fv(pMesh.u.uCam, B.pos); gl.uniform3fv(pMesh.u.uSun, SUNV);
+  gl.uniform3fv(pMesh.u.uCam, B.pos); gl.uniform3fv(pMesh.u.uSun, SUNV); setLight(pMesh);
   gl.uniformMatrix3fv(pMesh.u.uShM, false, E1[0]); gl.uniform3fv(pMesh.u.uShC, E1[1]);
   for (const [buf, shOn] of [[skiBuf, 1], [riderBuf, 0]]){ gl.uniform1f(pMesh.u.uShOn, shOn); gl.bindVertexArray(buf.vao); gl.drawElements(gl.TRIANGLES, buf.n, gl.UNSIGNED_INT, 0); }
   if (lipBuf.n && !Q.has('nolips')){                              // curling lips of plunging breakers
@@ -3601,7 +3674,7 @@ function frame(now){
     gl.useProgram(pLip.p);
     bindT(0, sceneRT.t); gl.uniform1i(pLip.u.uScene, 0); gl.uniform2f(pLip.u.uRes, W, H);
     gl.uniformMatrix4fv(pLip.u.uVP, false, VP); gl.uniformMatrix4fv(pLip.u.uM, false, new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]));
-    gl.uniform3fv(pLip.u.uCam, B.pos); gl.uniform3fv(pLip.u.uSun, SUNV); gl.uniform1f(pLip.u.uTime, t);
+    gl.uniform3fv(pLip.u.uCam, B.pos); gl.uniform3fv(pLip.u.uSun, SUNV); setLight(pLip); gl.uniform1f(pLip.u.uTime, t);
     gl.uniform3fv(pLip.u.uSigA, waterOpt.a); gl.uniform3fv(pLip.u.uSigS, waterOpt.b);
     gl.bindVertexArray(lipBuf.vao); gl.drawElements(gl.TRIANGLES, lipBuf.n, gl.UNSIGNED_INT, 0);
   }
@@ -3610,7 +3683,7 @@ function frame(now){
     gl.depthMask(false); gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     gl.useProgram(pSpray.p);
     gl.uniformMatrix4fv(pSpray.u.uVP, false, VP); gl.uniform3fv(pSpray.u.uR, B.r); gl.uniform3fv(pSpray.u.uU, B.u);
-    gl.uniform3fv(pSpray.u.uCam, B.pos); gl.uniform3fv(pSpray.u.uSun, SUNV);
+    gl.uniform3fv(pSpray.u.uCam, B.pos); gl.uniform3fv(pSpray.u.uSun, SUNV); setLight(pSpray);
     bindT(0, splashRT.t); gl.uniform1i(pSpray.u.uSplash, 0);
     gl.bindVertexArray(sprayVAO); gl.bindBuffer(gl.ARRAY_BUFFER, sprayVB); gl.bufferSubData(gl.ARRAY_BUFFER, 0, spray.inst, 0, spray.n*12);
     gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, spray.n);
