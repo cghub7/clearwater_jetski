@@ -1020,7 +1020,8 @@ function runFFT(t){
 // wavenumber by its own frequency w = sqrt(g k) (long waves outrun short ones: a real Kelvin wake with
 // transverse and diverging waves), inverse FFT. The hull pressure is the ski's measured hydrodynamic lift spread
 // over its wetted footprint, so displacement, planing and landings all make the right waves.
-// The window follows the ski; its borders absorb. A foam layer rides along.
+// The window follows the ski; its borders absorb. A foam layer rides along: white surface foam (x) and the milky
+// cloud of bubbles the churn leaves under it (y), which outlasts the foam.
 // 256² over 72 m (0.28 m cells), or 512² over 96 m on the Ultra preset (?wake=512 forces it).
 const WFMT = extF32 ? gl.RG32F : gl.RG16F;                                   // h and phi only: half the bandwidth of RGBA
 let WN = 0, RSIZE = 72.0, WDX = 1, wP = [], wFoam = [], ripN = null;
@@ -1030,7 +1031,7 @@ function allocWake(n){
   for (const r of [...wP, ...wFoam, ...(ripN ? [ripN] : [])]){ gl.deleteTexture(r.t); gl.deleteFramebuffer(r.fb); }
   WN = n; RSIZE = WN >= 512 ? 96.0 : 72.0; WDX = RSIZE/WN;
   wP = [0,1].map(()=>rt(WN,WN,WFMT,{filter:gl.NEAREST}));
-  wFoam = [0,1].map(()=>rt(WN,WN,gl.R16F,{filter:gl.NEAREST}));
+  wFoam = [0,1].map(()=>rt(WN,WN,gl.RG16F,{wrap:gl.CLAMP_TO_EDGE}));        // linear: the water shader samples the bubbles
   ripN = rt(WN,WN,gl.RGBA16F,{wrap:gl.CLAMP_TO_EDGE});         // (h, dh/dx, dh/dz, foam) for rendering
   for (const r of [...wP, ...wFoam, ripN]){ gl.bindFramebuffer(gl.FRAMEBUFFER, r.fb); gl.clearColor(0,0,0,0); gl.clear(gl.COLOR_BUFFER_BIT); }
   wCur = 0; wFoamCur = 0; ripCenter = [1e9, 1e9];                // far away: the next step recentres on the ski
@@ -1098,22 +1099,34 @@ void main(){
 }`, 'wakeProp');
 const pWFoam = prog(VS, HEAD + WAKE_FOOT + `
 uniform sampler2D uFoamSrc, uState; uniform ivec2 uShift; uniform float uDt, uEdge, uSeed, uTexel; uniform vec4 uJet, uRing;
+uniform vec2 uJetPrev; uniform vec4 uHits[32]; uniform int uNHits;
 float hash12(vec2 p){ vec3 p3 = fract(vec3(p.xyx)*.1031); p3 += dot(p3, p3.yzx+33.33); return fract((p3.x+p3.y)*p3.z); }
-float fo(ivec2 i, int N){ return inside(i, N) ? texelFetch(uFoamSrc, i, 0).x : 0.0; }
+vec2 fo(ivec2 i, int N){ return inside(i, N) ? texelFetch(uFoamSrc, i, 0).xy : vec2(0.0); }
 float hh(ivec2 i, int N){ return texelFetch(uState, clamp(i, ivec2(0), ivec2(N-1)), 0).x; }
 void main(){
   int N = textureSize(uState,0).x; ivec2 id = ivec2(gl_FragCoord.xy), is = id + uShift;
-  float f = fo(is,N)*0.84 + 0.04*(fo(is+ivec2(1,0),N) + fo(is-ivec2(1,0),N) + fo(is+ivec2(0,1),N) + fo(is-ivec2(0,1),N));
-  f *= exp(-uDt*0.5);
+  // spread a little (bubbles more), then decay: thick fresh foam collapses fast into lace that lingers for seconds,
+  // the bubble cloud fades slower still
+  vec2 c = fo(is,N), nb = fo(is+ivec2(1,0),N) + fo(is-ivec2(1,0),N) + fo(is+ivec2(0,1),N) + fo(is-ivec2(0,1),N);
+  float kd = 0.012*clamp(uDt*60.0, 0.5, 2.0);
+  float f = c.x*(1.0 - 4.0*kd) + kd*nb.x, b = c.y*(1.0 - 6.0*kd) + 1.5*kd*nb.y;
+  f *= exp(-uDt*0.22); f -= uDt*0.9*max(f - 0.9, 0.0); b *= exp(-uDt*0.09);
+  float f0 = f;
   vec2 g = vec2(hh(id+ivec2(1,0),N) - hh(id-ivec2(1,0),N), hh(id+ivec2(0,1),N) - hh(id-ivec2(0,1),N))/(2.0*uTexel);
   vec2 q = vUv - uFoot.xy; float fa = dot(q, uFoot.zw)/uFootS.x, fb = dot(q, vec2(-uFoot.w, uFoot.z))/uFootS.y;
   float away = smoothstep(1.3, 2.2, length(vec2(fa, fb)));      // the hull's own hollow is not a breaking wave
   f += max(length(g) - 0.42, 0.0)*uDt*4.0*away;                  // steep wake crests spill
   float s = footShape(vUv); f += uEdge*uDt*s*(1.0 - s)*6.0;      // turbulence along the wetted hull
-  vec2 jq = (vUv - uJet.xy)/uJet.w; f += uJet.z*uDt*exp(-dot(jq,jq))*(0.5 + hash12(vUv*977.0 + uSeed));
+  // the jet's churn, laid along the path swept since last frame so the trail is continuous at any speed
+  vec2 js = uJet.xy - uJetPrev; float jl = length(js);
+  vec2 jc = uJetPrev + js*clamp(dot(vUv - uJetPrev, js)/max(jl*jl, 1e-12), 0.0, 1.0);
+  vec2 jq = (vUv - jc)/uJet.w; f += uJet.z*exp(-dot(jq,jq))*(min(jl/uJet.w, 1.0)*0.564 + uDt*0.8)*(0.75 + 0.5*hash12(vUv*977.0 + uSeed));   // 1/sqrt(pi): each pass leaves ~uJet.z
+  // spray landing back on the water
+  for (int k=0;k<32;k++){ if (k >= uNHits) break; vec2 hq = (vUv - uHits[k].xy)/uHits[k].w; f += uHits[k].z*exp(-dot(hq,hq)); }
   if (uRing.w > 0.0){ float d = length(vUv - uRing.xy), w = 0.12*uRing.z + 0.003;        // spreading foam ring after a slam
     f += uRing.w*uDt*exp(-pow((d - uRing.z)/w, 2.0))*(0.6 + 0.8*hash12(vUv*613.0 + uSeed)); }
-  o = vec4(min(f, 1.6), 0, 0, 1);
+  b += (f - f0)*0.7 + uDt*0.12*f;                                    // the churn that makes foam also mixes bubbles down
+  o = vec4(min(f, 1.6), min(b, 1.5), 0, 1);
 }`, 'wakeFoam');
 const pWOut = prog(VS, HEAD + `
 uniform sampler2D uState, uFoam; uniform float uTexel;
@@ -1136,6 +1149,7 @@ function wakeFFT(src, sign){ // ping-pong within wP starting at wP[src]; returns
 // A planing hull throws water sideways (spray sheets, the jet) beyond what its lift alone would push down, so the
 // pressure patch gets a gain calibrated to real wake heights (~0.3-0.5 m crests at 30-50 km/h).
 const WAKE_GAIN = 1.8;
+const HITS = new Float32Array(32*4);
 let footPrev = null;
 function setFoot(P, foot, fwd){
   const [cx, cz, fy] = foot, a = Math.max(foot[3], 1.0), b = Math.max(foot[4], 0.45);   // hull + jet disturb at least a hull-sized patch
@@ -1149,7 +1163,9 @@ function setFoot(P, foot, fwd){
   return [a/RSIZE, b/RSIZE, P0];
 }
 // one wake step per frame. foot = ski.foot [x, z, vertical force, half length, half width]; jet = [x, z, foam rate, radius]
-function stepWake(dt, skiX, skiZ, fwd, foot, edgeFoam, jet, ev){
+// hits: spray landing on the water, [x, z, foam, radius]
+let jetPrev = null;
+function stepWake(dt, skiX, skiZ, fwd, foot, edgeFoam, jet, ev, hits){
   dt = Math.min(dt, 1/20);
   const want = [skiX - fwd[0]*RSIZE*0.22, skiZ - fwd[1]*RSIZE*0.22];
   let sx = Math.round((want[0]-ripCenter[0])/WDX), sz = Math.round((want[1]-ripCenter[1])/WDX);
@@ -1174,6 +1190,15 @@ function stepWake(dt, skiX, skiZ, fwd, foot, edgeFoam, jet, ev){
   const ff = setFoot(pWFoam, foot, fwd); gl.uniform3f(pWFoam.u.uFootS, ff[0], ff[1], 0);
   gl.uniform1f(pWFoam.u.uDt, dt); gl.uniform1f(pWFoam.u.uEdge, edgeFoam); gl.uniform1f(pWFoam.u.uSeed, Math.random()*100); gl.uniform1f(pWFoam.u.uTexel, WDX);
   gl.uniform4f(pWFoam.u.uJet, (jet[0]-ripCenter[0])/RSIZE+0.5, (jet[1]-ripCenter[1])/RSIZE+0.5, jet[2], jet[3]/RSIZE);
+  if (!jetPrev || Math.hypot(jet[0]-jetPrev[0], jet[1]-jetPrev[1]) > 8) jetPrev = [jet[0], jet[1]];
+  gl.uniform2f(pWFoam.u.uJetPrev, (jetPrev[0]-ripCenter[0])/RSIZE+0.5, (jetPrev[1]-ripCenter[1])/RSIZE+0.5); jetPrev = [jet[0], jet[1]];
+  let nh = 0;
+  if (hits) for (const h of hits){
+    const u = (h[0]-ripCenter[0])/RSIZE+0.5, v = (h[1]-ripCenter[1])/RSIZE+0.5;
+    if (u < 0 || v < 0 || u > 1 || v > 1) continue;
+    HITS[nh*4] = u; HITS[nh*4+1] = v; HITS[nh*4+2] = h[2]; HITS[nh*4+3] = h[3]/RSIZE; if (++nh >= 32) break;
+  }
+  gl.uniform4fv(pWFoam.u.uHits, HITS); gl.uniform1i(pWFoam.u.uNHits, nh);
   const rg = ev && ev.ring; gl.uniform4f(pWFoam.u.uRing, rg ? (rg[0]-ripCenter[0])/RSIZE+0.5 : 0, rg ? (rg[1]-ripCenter[1])/RSIZE+0.5 : 0, rg ? rg[2]/RSIZE : 0, rg ? rg[3] : 0);
   fullscreen(); wFoamCur = 1-wFoamCur;
   // 6. height, slope, foam for the water shader
@@ -1398,6 +1423,12 @@ vec3 addClouds(vec3 c, vec3 d, int oct){
   vec3 cc = mix(vec3(0.58, 0.64, 0.74), vec3(1.10, 1.06, 1.00), lit) + vec3(1.0, 0.9, 0.75)*0.8*pow(mu, 10.0)*(1.0 - 0.6*cov);
   return mix(c, cc, cov*smoothstep(0.01, 0.17, d.y)*0.93);
 }
+float ridgeMask(vec3 d){
+  if (d.y > 0.095 || d.y < 0.0) return 0.0;
+  float a = atan(d.z, d.x);
+  float r = ridge(a) + 0.0045*(vnoise(vec2(a*260.0, 0.0))-0.5);
+  return smoothstep(r + 0.004, r - 0.004, d.y);
+}
 vec3 sky(vec3 d, int oct){
   float e = d.y;
   float mu = dot(d, uSun);
@@ -1426,7 +1457,7 @@ vec3 sky(vec3 d, int oct){
 
 /* ---------------- Main shader: sky, water, terrain ---------------- */
 const pMain = prog(VS, HEAD+`
-uniform sampler2D uSurf, uCaus, uPeb, uRip, uC0, uC1, uD0, uD1, uGround, uFoamTex; uniform vec2 uGC;
+uniform sampler2D uSurf, uCaus, uPeb, uRip, uC0, uC1, uD0, uD1, uGround, uFoamTex, uWFoam; uniform vec2 uGC;
 uniform vec3 uCam, uR, uU, uF, uSun;
 uniform float uTanF, uAspect, uL, uTime, uRipSize, uL0, uL1, uHm, uWhite, uNear, uFar;
 uniform vec2 uCausShift, uRipCenter;
@@ -1612,18 +1643,21 @@ vec3 landReflect(vec3 ro, vec3 rd, float tBase, out float cov){
   if (ro.z > 4.0) iv = vec2(0.0, 2500.0); else if (rd.z > 1e-4) iv = vec2((4.0 - ro.z)/rd.z, 2500.0);
 ${ISLANDS.map(I => `  slab(ro, rd, vec2(${I.x.toFixed(1)},${I.z.toFixed(1)}), ${(I.R*1.35+3).toFixed(1)}, ${(I.H+1).toFixed(1)}, iv);`).join('\n')}
   if (iv.x >= iv.y) return vec3(0);
-  float t = max(iv.x, 0.3), kx = 1.0/(abs(rd.y) + 0.9*length(rd.xz));
-  for (int i=0;i<56;i++){
-    if (t > iv.y) break;
+  // hills rarely exceed a 0.5 slope; a mirrored ray skims just above the rising land, so it needs long steps
+  float t = max(iv.x, 0.3), kx = 1.0/(abs(rd.y) + 0.5*length(rd.xz));
+  bool ran = true;
+  for (int i=0;i<80;i++){
+    if (float(i) >= uRefl || t > iv.y){ ran = t <= iv.y; break; }
     vec3 p = ro + rd*t; float d = p.y - groundMarch(p.xz, t);
     if (d < 0.0){ hit = true; break; }
-    float o = d/(0.06*t); if (o < occ){ occ = o; tc = t; }
-    if (p.y > 45.0) break;
-    t += clamp(d*kx*0.9, 0.1 + 0.03*t, 80.0);
+    float o = d/(0.012*t); if (o < occ){ occ = o; tc = t; }
+    if (p.y > 60.0){ ran = false; break; }
+    t += clamp(d*kx*0.9, 0.1 + 0.02*t, 80.0);
   }
+  if (ran && occ < 1.5){ hit = true; tc = t; }        // out of steps while hugging the land: it's land
   cov = hit ? 1.0 : 1.0 - smoothstep(0.0, 1.0, occ);
   if (cov <= 0.0) return vec3(0);
-  if (!hit) t = tc;
+  if (!hit || ran) t = tc;
   vec3 P = ro + rd*t;
   float e = 0.8 + 0.01*t;
   vec3 n = normalize(vec3(groundMarch(P.xz - vec2(e,0), t) - groundMarch(P.xz + vec2(e,0), t), 2.0*e,
@@ -1789,11 +1823,19 @@ void main(){
 
     vec3 rr = reflect(wd, n); rr.y = abs(rr.y);
     vec3 refl = sky(rr, 2) * 1.25;
-    if (uRefl > 0.5 && F > 0.03 && rr.y < 0.3){
-      // with distance, small wave facets average out: look up the land along a flatter, filtered normal
-      vec3 rl = reflect(wd, normalize(mix(n, vec3(0,1,0), clamp(0.45 + tw/80.0, 0.0, 0.85)))); rl.y = abs(rl.y);
-      float cv; vec3 lc = landReflect(P + vec3(0.0, 0.05, 0.0), rl, tw, cv); refl = mix(refl, lc, cv);
+    // with distance, small wave facets average out: land is looked up along a flatter, filtered normal and reflected
+    // as strongly as that averaged surface does (a grazing view of distant water is close to a mirror), so hills,
+    // islands and the far headland show upside down in the water
+    float kFlat = clamp(0.45 + tw/80.0, 0.0, 0.85);
+    vec3 nf = normalize(mix(n, vec3(0,1,0), kFlat));
+    vec3 rl = reflect(wd, nf); rl.y = abs(rl.y);
+    float landCv = ridgeMask(rl);
+    if (landCv > 0.0) refl = mix(refl, sky(rl, 2), landCv);
+    if (uRefl > 0.5 && rl.y < 0.3){
+      float cv; vec3 lc = landReflect(P + vec3(0.0, 0.05, 0.0), rl, tw, cv);
+      refl = mix(refl, lc, cv); landCv = max(landCv, cv);
     }
+    float Fr = mix(F, max(F, fresnel(max(dot(nf, v), 0.02), IOR)), landCv*kFlat);
 
     float a2 = 0.00012 + 1.2*var;
     vec3 h = normalize(v + uSun);
@@ -1871,7 +1913,15 @@ void main(){
     float crestH = max(surfEta, 0.0) + max(crest, 0.0)*0.5;
     float topRel = onSurf ? smoothstep(0.45, 0.98, surfEta/(1.47*Sm.a + 1e-3))*(0.4 + 0.8*Sm.sf) : 0.0;   // thin water near a steep crest
     under += SIG_S/SIG_T*exp(-SIG_A*1.5)*0.25 * SUN * max(smoothstep(0.1, 0.9, crestH)*0.5, topRel) * (0.35 + 0.65*max(dot(rd, uSun), 0.0)) * shade;
-    col = F*refl + (1.0-F)*under + spec;
+    col = Fr*refl + (1.0-Fr)*under + spec;
+    // the jetski's bubble cloud: churned-in air under and around its foam trail scatters light back up, turning the
+    // water a milky, bright turquoise that outlasts the white foam
+    vec2 ruv = ripUV(P.xz), re = min(ruv, 1.0 - ruv);
+    float bub = texture(uWFoam, ruv).y * smoothstep(0.0, 0.08, min(re.x, re.y));
+    if (bub > 0.002){
+      float bb = (1.0 - exp(-bub*1.8)) * (0.7 + 0.6*vnoise(P.xz*0.9 + 7.0));
+      col = mix(col, col*0.55 + (1.0-Fr)*vec3(0.32, 0.86, 0.82)*(SUN*0.075*shade + skyIrr*0.42), clamp(bb, 0.0, 0.85));
+    }
 
     // ---- foam: wake, whitecaps on steep crests, surf, the lapping edge ----
     float fo = Rw.w;
@@ -2319,15 +2369,32 @@ function emit(x,y,z, vx,vy,vz, life, size, grow, alpha){
   spray.life[i]=0; spray.max[i]=life; spray.size[i]=size; spray.grow[i]=grow; spray.a[i]=alpha;
 }
 const _sw = new Float64Array(7);
+// droplets falling back onto the water leave foam where they land: binned on a 0.8 m grid, handed to the wake's foam
+const sprayHits = new Map(); let sprayTick = 0;
+function takeSprayHits(){
+  const a = [...sprayHits.values()].sort((p, q) => q[2] - p[2]).slice(0, 32);
+  for (const h of a){ h[0] /= h[4]; h[1] /= h[4]; h[2] = Math.min(h[2], 0.5); h[3] = 0.55 + 0.25*Math.min(h[4], 6)/6; }
+  sprayHits.clear(); return a;
+}
 function updateSpray(dt){
-  let j = 0;
+  let j = 0; sprayTick++;
   for (let i=0;i<spray.n;i++){
     spray.life[i] += dt; if (spray.life[i] >= spray.max[i]) continue;
     const drag = spray.grow[i] > 0.5 ? 2.2 : 0.35;     // mist slows fast, droplets fly
     for (let k=0;k<3;k++) spray.v[i*3+k] *= Math.exp(-drag*dt);
     spray.v[i*3+1] -= GRAV*dt*(spray.grow[i] > 0.5 ? 0.3 : 1);
     for (let k=0;k<3;k++) spray.p[i*3+k] += spray.v[i*3+k]*dt;
-    if (spray.v[i*3+1] < 0 && (i & 7) === 0){ waterSurface(ocean, spray.p[i*3], spray.p[i*3+2], _sw); if (spray.p[i*3+1] < _sw[0] - 0.1) continue; }
+    if (spray.v[i*3+1] < 0 && ((i + sprayTick) & 3) === 0){
+      waterSurface(ocean, spray.p[i*3], spray.p[i*3+2], _sw);
+      if (spray.p[i*3+1] < _sw[0] - 0.1){
+        if (spray.grow[i] < 0.5){                                   // a droplet cluster, not mist
+          const x = spray.p[i*3], z = spray.p[i*3+2], key = Math.round(x/0.8)*100003 + Math.round(z/0.8);
+          let h = sprayHits.get(key); if (!h){ h = [0, 0, 0, 0, 0]; sprayHits.set(key, h); }
+          h[0] += x; h[1] += z; h[2] += 0.012 + 0.25*spray.size[i]; h[4]++;
+        }
+        continue;
+      }
+    }
     if (j !== i){ for (let k=0;k<3;k++){ spray.p[j*3+k]=spray.p[i*3+k]; spray.v[j*3+k]=spray.v[i*3+k]; }
       spray.life[j]=spray.life[i]; spray.max[j]=spray.max[i]; spray.size[j]=spray.size[i]; spray.grow[j]=spray.grow[i]; spray.a[j]=spray.a[i]; }
     j++;
@@ -2893,7 +2960,7 @@ function post(t){
 
 
 /* ---------------- Game state ---------------- */
-const VERSION = '2.3.0';
+const VERSION = '2.4.0';
 document.getElementById('ver').textContent = 'v' + VERSION;
 const SUN_EL = 31*Math.PI/180, SUN_AZ = 6*Math.PI/180;
 const SUNV = [Math.sin(SUN_AZ)*Math.cos(SUN_EL), Math.sin(SUN_EL), -Math.cos(SUN_AZ)*Math.cos(SUN_EL)];
@@ -3040,7 +3107,7 @@ function readInput(dt){
   }
   if (touch.gasId !== null) thr = 1;
   if (touch.steerId !== null){ steer = touch.steer; analog = true; }
-  if (AUTO){ thr = Q.has('athr') ? +Q.get('athr') : 1; steer = Q.has('straight') ? 0 : (Math.sin(tSim*0.35) > 0.6 ? 1 : (Math.sin(tSim*0.35) < -0.85 ? -1 : 0)); }
+  if (AUTO){ thr = Q.has('athr') ? +Q.get('athr') : 1; steer = Q.has('asteer') ? +Q.get('asteer') : Q.has('straight') ? 0 : (Math.sin(tSim*0.35) > 0.6 ? 1 : (Math.sin(tSim*0.35) < -0.85 ? -1 : 0)); }
   if (!started && !AUTO){ thr = 0; brk = 0; steer = 0; }
   inp.thr += (thr - inp.thr)*Math.min(1, dt*9);
   inp.brk += (brk - inp.brk)*Math.min(1, dt*9);
@@ -3216,6 +3283,24 @@ function emitSpray(dt){
            mist ? 0.35 + 0.3*rnd01() : 0.2 + 0.2*rnd01(), mist ? 0.07 + 0.05*rnd01() : 0.012 + 0.018*rnd01(), mist ? 1 : 0, mist ? 0.18 : 0.7);
     }
   }
+  // carving: in a turn the hull slides sideways and its aft outer chine and the steered jet plough water outward
+  // in a sheet that fans up and back (the big white wall off the side of a hard-turning ski)
+  {
+    const side = [R[0], R[3], R[6]], vLat = v[0]*side[0] + v[1]*side[1] + v[2]*side[2];
+    const carve = clamp((Math.abs(vLat) - 0.6)/3.5, 0, 1.4)*clamp((spd - 3)/8, 0, 1.3)*clamp(ski.wet/0.2, 0, 1)*(ski.airT > 0 ? 0 : 1);
+    if (carve > 0.02){
+      const sd = Math.sign(vLat), ox = side[0]*sd, oz = side[2]*sd, ol = Math.hypot(ox, oz) || 1;
+      const cnt = Math.floor(carve*carve*900*dt + rnd01()), mistN = Math.floor(carve*carve*90*dt + rnd01());
+      for (let i=0;i<cnt + mistN;i++){
+        const mist = i >= cnt, s = 0.04 + 0.4*rnd01(), h = hullSection(s), p = bodyToWorld([h[2][0]*sd, h[2][1], hullZ(s)]);
+        const out = (0.8 + 0.8*rnd01())*Math.abs(vLat) + spd*(0.10 + 0.12*rnd01()), up = 1.2 + spd*(0.10 + 0.14*rnd01())*Math.min(carve, 1);
+        const back = -spd*(0.1 + 0.3*rnd01());
+        emit(p[0], p[1] + 0.02, p[2],
+             v[0]*0.6 + ox/ol*out + fwd[0]*back, up, v[2]*0.6 + oz/ol*out + fwd[2]*back,
+             mist ? 0.9 + 0.8*rnd01() : 0.6 + 0.7*rnd01(), mist ? 0.25 + 0.3*rnd01() : 0.03 + 0.045*rnd01(), mist ? 1 : 0, mist ? 0.3 : 0.9);
+      }
+    }
+  }
   // landing: a slam (Wagner/von Karman impact). Root jets and side sheets leave the chines at 1.2-2x the impact
   // speed, 20-45 deg above the water; a crown splash follows at 35-70 deg; fine droplets go higher. Counts scale
   // with impact energy (q^0.6). A small ring wave and a spreading foam ring are handed to the wake.
@@ -3225,17 +3310,22 @@ function emitSpray(dt){
     const sx = side[0]/hl, sz = side[1]/hl;
     const put = (n, fn) => { for (let i=0;i<n;i++) fn(); };
     const chine = () => { const s = 0.1 + 0.75*rnd01(), sd = rnd01() < 0.5 ? -1 : 1, h = hullSection(s); return [bodyToWorld([h[2][0]*sd, h[2][1], hullZ(s)]), sd]; };
-    put(Math.floor(60*qn), () => {                              // root jets / side sheets
+    put(Math.floor(150*qn), () => {                             // root jets / side sheets
       const [p, sd] = chine(), th = (20 + 25*rnd01())*Math.PI/180, sp = Math.min((1.2 + 0.8*rnd01())*V, 25);
       emit(p[0], p[1], p[2], v[0]*0.5 + sx*sd*sp*Math.cos(th), sp*Math.sin(th), v[2]*0.5 + sz*sd*sp*Math.cos(th),
            0.5 + 0.5*rnd01(), 0.035 + 0.05*rnd01(), 0, 0.9);
     });
-    put(Math.floor(22*qn), () => {                              // crown splash: slower, steeper, misty
+    put(Math.floor(70*qn), () => {                              // the sheets are dense: white spray sheets, not just drops
+      const [p, sd] = chine(), th = (18 + 30*rnd01())*Math.PI/180, sp = Math.min((0.8 + 0.8*rnd01())*V, 18);
+      emit(p[0], p[1], p[2], v[0]*0.5 + sx*sd*sp*Math.cos(th), sp*Math.sin(th), v[2]*0.5 + sz*sd*sp*Math.cos(th),
+           0.7 + 0.6*rnd01(), 0.2 + 0.25*rnd01(), 1, 0.45);
+    });
+    put(Math.floor(60*qn), () => {                              // crown splash: slower, steeper, misty
       const [p, sd] = chine(), th = (35 + 35*rnd01())*Math.PI/180, sp = (0.6 + 0.4*rnd01())*V;
       emit(p[0], p[1], p[2], v[0]*0.3 + sx*sd*sp*Math.cos(th), sp*Math.sin(th), v[2]*0.3 + sz*sd*sp*Math.cos(th),
            1.2 + 1.0*rnd01(), 0.3 + 0.4*rnd01(), 1, 0.3);
     });
-    put(Math.floor(150*qn), () => {                             // secondary droplets
+    put(Math.floor(320*qn), () => {                             // secondary droplets
       const [p, sd] = chine(), th = (45 + 40*rnd01())*Math.PI/180, sp = (0.3 + 0.9*rnd01())*V;
       emit(p[0], p[1], p[2], v[0]*0.4 + sx*sd*sp*Math.cos(th) + (rnd01()-0.5), sp*Math.sin(th), v[2]*0.4 + sz*sd*sp*Math.cos(th) + (rnd01()-0.5),
            0.4 + 0.7*rnd01(), 0.015 + 0.03*rnd01(), 0, 0.85);
@@ -3364,10 +3454,10 @@ void main(){
    rate is poor, then locks. A choice made with the Graphics button (or G) is remembered. Changes are applied at the
    start of a frame, so the resized canvas is drawn before it is shown. */
 const GFX = [
-  { name:'Low',    cap:1.0, scale:0.60, glare:false, glareEvery:1, causEvery:4, wake:256, fxaa:false, refl:false },
-  { name:'Medium', cap:1.5, scale:0.70, glare:true,  glareEvery:2, causEvery:2, wake:256, fxaa:true,  refl:false },
-  { name:'High',   cap:1.5, scale:0.90, glare:true,  glareEvery:1, causEvery:2, wake:256, fxaa:true,  refl:true },
-  { name:'Ultra',  cap:2.0, scale:1.00, glare:true,  glareEvery:1, causEvery:1, wake:512, fxaa:true,  refl:true },
+  { name:'Low',    cap:1.0, scale:0.60, glare:false, glareEvery:1, causEvery:4, wake:256, fxaa:false, refl:0 },
+  { name:'Medium', cap:1.5, scale:0.70, glare:true,  glareEvery:2, causEvery:2, wake:256, fxaa:true,  refl:40 },
+  { name:'High',   cap:1.5, scale:0.90, glare:true,  glareEvery:1, causEvery:2, wake:256, fxaa:true,  refl:72 },
+  { name:'Ultra',  cap:2.0, scale:1.00, glare:true,  glareEvery:1, causEvery:1, wake:512, fxaa:true,  refl:80 },
 ];
 let gfxFxaa = true, gfxRefl = true;
 let gfxLevel = 2, gfxAuto = true, gfxGlare = true, gfxGlareEvery = 1, gfxCausEvery = 2, pendingAlloc = false, pendingWake = 0;
@@ -3411,6 +3501,19 @@ function shallowsNear(x, z){
   for (let dz=-240; dz<=240; dz+=60) for (let dx=-240; dx<=240; dx+=60) if (groundH(x+dx, z+dz) > -16) return true;
   return false;
 }
+// one wake step: the hull's pressure, the jet's churn and the spray landing back, handed to the wake solver
+function wakeTick(dt){
+  const R = ski.R, fwd = [-R[2], -R[8]], fl = Math.hypot(fwd[0], fwd[1]) || 1;
+  const wetK = clamp(ski.wet/0.4, 0, 1);
+  // the jet churns a white trail about a hull wide that spreads behind; a carving hull smears it out sideways
+  const nzW = ski.nozzleW, thrK = clamp(Math.max(ski.thrust,0)/SKI.thrustMax, 0, 1), depK = clamp((ski.nozzleDepth + 0.5)/0.35, 0, 1);   // a jet leaving just above the surface still slams into it; none in the air
+  const sideW = [R[0], R[6]], vLat = ski.v[0]*R[0] + ski.v[1]*R[3] + ski.v[2]*R[6];
+  const carveW = clamp(Math.abs(vLat)/3, 0, 1)*clamp(ski.speed/8, 0, 1), jetR = 0.45 + 0.02*ski.speed + 0.5*carveW, jetOff = 0.45*carveW*Math.sign(vLat);
+  const jetFoam = (0.5*clamp(ski.speed/5, 0.2, 1) + 0.9*thrK)*depK + 0.5*carveW*wetK;   // hull wash + the jet's churn
+  stepWake(dt, ski.p[0], ski.p[2], [fwd[0]/fl, fwd[1]/fl], [...ski.foot, ski.speed], clamp((ski.speed-2)/14, 0, 1)*3.0*wetK,
+           [nzW[0] - fwd[0]/fl*1.2 + sideW[0]*jetOff, nzW[2] - fwd[1]/fl*1.2 + sideW[1]*jetOff, jetFoam, jetR], wakeEvents(dt), takeSprayHits());
+}
+const FF = Q.has('ff') ? Math.max(1, +Q.get('ff')) : 1;   // test hook: simulate ff ticks per rendered frame
 function frame(now){
   const dtRaw = Math.min(0.1, (now-last)/1000), dt = FIXED_DT || Math.min(0.05, dtRaw); last = now;
   if (pendingWake){ allocWake(pendingWake); pendingWake = 0; }
@@ -3428,6 +3531,11 @@ function frame(now){
   impactPeak = 0;
   for (let k=0;k<n;k++){ skiStep(ski, ocean, h, k*h); impactPeak = Math.max(impactPeak, ski.impact); }
   const tc2 = performance.now();
+  for (let r=1; r<FF; r++){                   // fast-forward (testing): extra ticks without rendering
+    trackSlam(); emitSpray(dt); updateSpray(dt); wakeTick(dt);
+    tSim += dt; readInput(dt); ocean.update(tSim, dt);
+    for (let k=0;k<n;k++) skiStep(ski, ocean, h, k*h);
+  }
   trackSlam(); emitSpray(dt);
   const lipTips = buildLips(cam.pos ? cam.pos[0] : ski.p[0], cam.pos ? cam.pos[2] : ski.p[2], t);
   if (cam.pos){ surfSpray(lipTips, cam.pos, dt); rockSplashes(cam.pos, dt); }
@@ -3450,11 +3558,7 @@ function frame(now){
 
   // GPU: water detail, wake, caustics
   runFFT(t*0.9);
-  const R = ski.R, fwd = [-R[2], -R[8]], fl = Math.hypot(fwd[0], fwd[1]) || 1;
-  const wetK = clamp(ski.wet/0.4, 0, 1);
-  const nzW = ski.nozzleW, jetFoam = clamp(Math.max(ski.thrust,0)/SKI.thrustMax, 0, 1)*2.2*clamp((0.5 - ski.nozzleDepth)/0.5, 0, 1);
-  stepWake(dt, ski.p[0], ski.p[2], [fwd[0]/fl, fwd[1]/fl], [...ski.foot, ski.speed], clamp((ski.speed-2)/14, 0, 1)*3.0*wetK,
-           [nzW[0] - fwd[0]/fl*0.9, nzW[2] - fwd[1]/fl*0.9, jetFoam, 0.4], wakeEvents(dt));
+  wakeTick(dt);
   if (--causticsCheck <= 0){ causticsCheck = 20; causticsOn = shallowsNear(B.pos[0], B.pos[2]); }
   if (causticsOn && (frames % gfxCausEvery) === 0) renderCaustics(SUNV);   // light patterns drift slowly: no need every frame
   updateGroundMap(B.pos[0], B.pos[2]);
@@ -3464,9 +3568,9 @@ function frame(now){
   target(hdrRT); gl.disable(gl.BLEND);
   gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.ALWAYS); gl.depthMask(true);
   gl.useProgram(pMain.p);
-  bindT(0,surfRT.t); bindT(1,causRT.t); bindT(2,pebTex); bindT(3,ripN.t); bindT(4,casTex[0]); bindT(5,casTex[1]); bindT(6,groundRT.t); bindT(7,surfTex); bindT(8,casTex2[0]); bindT(9,casTex2[1]); bindT(10,foamTexRT.t);
+  bindT(0,surfRT.t); bindT(1,causRT.t); bindT(2,pebTex); bindT(3,ripN.t); bindT(4,casTex[0]); bindT(5,casTex[1]); bindT(6,groundRT.t); bindT(7,surfTex); bindT(8,casTex2[0]); bindT(9,casTex2[1]); bindT(10,foamTexRT.t); bindT(11,wFoam[wFoamCur].t);
   const u = pMain.u;
-  gl.uniform1i(u.uSurf,0); gl.uniform1i(u.uCaus,1); gl.uniform1i(u.uPeb,2); gl.uniform1i(u.uRip,3); gl.uniform1i(u.uC0,4); gl.uniform1i(u.uC1,5); gl.uniform1i(u.uGround,6); gl.uniform1i(u.uSurfTab,7); gl.uniform1i(u.uD0,8); gl.uniform1i(u.uD1,9); gl.uniform1i(u.uFoamTex,10); gl.uniform3fv(u.uSigA, waterOpt.a); gl.uniform3fv(u.uSigS, waterOpt.b); gl.uniform1f(u.uRefl, gfxRefl && !Q.has("norefl") ? 1 : 0); gl.uniform2f(u.uGC, GMAP.cx, GMAP.cz);
+  gl.uniform1i(u.uSurf,0); gl.uniform1i(u.uCaus,1); gl.uniform1i(u.uPeb,2); gl.uniform1i(u.uRip,3); gl.uniform1i(u.uC0,4); gl.uniform1i(u.uC1,5); gl.uniform1i(u.uGround,6); gl.uniform1i(u.uSurfTab,7); gl.uniform1i(u.uD0,8); gl.uniform1i(u.uD1,9); gl.uniform1i(u.uFoamTex,10); gl.uniform1i(u.uWFoam,11); gl.uniform3fv(u.uSigA, waterOpt.a); gl.uniform3fv(u.uSigS, waterOpt.b); gl.uniform1f(u.uRefl, Q.has("norefl") ? 0 : gfxRefl); gl.uniform2f(u.uGC, GMAP.cx, GMAP.cz);
   gl.uniform1f(u.uSurfA, ocean.surf*(+(Q.get('surfx')||1))); gl.uniform1f(u.uSurfT, ocean.t);
   gl.uniform3fv(u.uCam, B.pos); gl.uniform3fv(u.uR, B.r); gl.uniform3fv(u.uU, B.u); gl.uniform3fv(u.uF, B.f); gl.uniform3fv(u.uSun, SUNV);
   gl.uniform1f(u.uTanF, tanF); gl.uniform1f(u.uAspect, asp); gl.uniform1f(u.uL, L); gl.uniform1f(u.uTime, t);
